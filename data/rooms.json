@@ -1,0 +1,208 @@
+[
+  {
+    "id": "hallway",
+    "name": {
+      "kk": "Дәліз",
+      "ru": "Прихожая",
+      "en": "Hallway"
+    },
+    "base": "images/base/hallway.png",
+    "layers": [
+      {
+        "id": "hallway__wall",
+        "name": {
+          "kk": "Қабырға",
+          "ru": "Стена",
+          "en": "Wall"
+        },
+        "mask": "images/masks/hallway__wall.png",
+        "order": 1
+      },
+      {
+        "id": "hallway__skirting",
+        "name": {
+          "kk": "Плинтус",
+          "ru": "Плинтус",
+          "en": "Skirting"
+        },
+        "mask": "images/masks/hallway__skirting.png",
+        "order": 2
+      }
+    ]
+  },
+  {
+    "id": "kitchen",
+    "name": {
+      "kk": "Ас бөлме",
+      "ru": "Кухня",
+      "en": "Kitchen"
+    },
+    "base": "images/base/kitchen.png",
+    "layers": [
+      {
+        "id": "kitchen__ceiling",
+        "name": {
+          "kk": "Төбе",
+          "ru": "Потолок",
+          "en": "Ceiling"
+        },
+        "mask": "images/masks/kitchen__ceiling.png",
+        "order": 1
+      },
+      {
+        "id": "kitchen__wall",
+        "name": {
+          "kk": "Қабырға",
+          "ru": "Стена",
+          "en": "Wall"
+        },
+        "mask": "images/masks/kitchen__wall.png",
+        "order": 2
+      },
+      {
+        "id": "kitchen__skirting",
+        "name": {
+          "kk": "Плинтус",
+          "ru": "Плинтус",
+          "en": "Skirting"
+        },
+        "mask": "images/masks/kitchen__skirting.png",
+        "order": 3
+      }
+    ]
+  },
+  {
+    "id": "bedroom",
+    "name": {
+      "kk": "Жатын бөлме",
+      "ru": "Спальня",
+      "en": "Bedroom"
+    },
+    "base": "images/base/bedroom.png",
+    "layers": [
+      {
+        "id": "bedroom__wall",
+        "name": {
+          "kk": "Қабырға",
+          "ru": "Стена",
+          "en": "Wall"
+        },
+        "mask": "images/masks/bedroom__wall.png",
+        "order": 1
+      },
+      {
+        "id": "bedroom__skirting",
+        "name": {
+          "kk": "Плинтус",
+          "ru": "Плинтус",
+          "en": "Skirting"
+        },
+        "mask": "images/masks/bedroom__skirting.png",
+        "order": 2
+      }
+    ]
+  },
+  {
+    "id": "facade",
+    "name": {
+      "kk": "Фасад",
+      "ru": "Фасад",
+      "en": "Facade"
+    },
+    "base": "images/base/facade.png",
+    "layers": [
+      {
+        "id": "facade__wall",
+        "name": {
+          "kk": "Қабырға",
+          "ru": "Стена",
+          "en": "Wall"
+        },
+        "mask": "images/masks/facade__wall.png",
+        "order": 1
+      }
+    ]
+  },
+  {
+    "id": "bathroom",
+    "name": {
+      "kk": "Ванна бөлме",
+      "ru": "Ванная",
+      "en": "Bathroom"
+    },
+    "base": "images/base/bathroom.png",
+    "layers": [
+      {
+        "id": "bathroom__wall",
+        "name": {
+          "kk": "Қабырға",
+          "ru": "Стена",
+          "en": "Wall"
+        },
+        "mask": "images/masks/bathroom__wall.png",
+        "order": 1
+      },
+      {
+        "id": "bathroom__window",
+        "name": {
+          "kk": "Терезе жақтауы",
+          "ru": "Оконная рама",
+          "en": "Window frame"
+        },
+        "mask": "images/masks/bathroom__window.png",
+        "order": 2
+      },
+      {
+        "id": "bathroom__skirting",
+        "name": {
+          "kk": "Плинтус",
+          "ru": "Плинтус",
+          "en": "Skirting"
+        },
+        "mask": "images/masks/bathroom__skirting.png",
+        "order": 3
+      }
+    ]
+  },
+  {
+    "id": "livingroom",
+    "name": {
+      "kk": "Қонақ бөлме",
+      "ru": "Гостиная",
+      "en": "Living room"
+    },
+    "base": "images/base/livingroom.png",
+    "layers": [
+      {
+        "id": "livingroom__wall1",
+        "name": {
+          "kk": "Қабырға 1",
+          "ru": "Стена 1",
+          "en": "Wall 1"
+        },
+        "mask": "images/masks/livingroom__wall1.png",
+        "order": 1
+      },
+      {
+        "id": "livingroom__wall2",
+        "name": {
+          "kk": "Қабырға 2",
+          "ru": "Стена 2",
+          "en": "Wall 2"
+        },
+        "mask": "images/masks/livingroom__wall2.png",
+        "order": 2
+      },
+      {
+        "id": "livingroom__skirting",
+        "name": {
+          "kk": "Плинтус",
+          "ru": "Плинтус",
+          "en": "Skirting"
+        },
+        "mask": "images/masks/livingroom__skirting.png",
+        "order": 3
+      }
+    ]
+  }
+]
