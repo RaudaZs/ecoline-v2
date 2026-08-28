@@ -422,9 +422,14 @@ const UploadTool = (() => {
   async function handleSamClick(e) {
     if (state.samLoading) return;
 
+    // Check if running locally
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (isLocal) {
+      alert('AI сегменттеу тек онлайн нұсқада жұмыс істейді (Vercel).\n\nҚылқалам режимін қолданыңыз.');
+      return;
+    }
+
     const pos = getCanvasPos(e);
-    
-    // Convert canvas coordinates to original image coordinates
     const scaleX = state.uploadedImage.width / els.canvasBase.width;
     const scaleY = state.uploadedImage.height / els.canvasBase.height;
     const origX = Math.round(pos.x * scaleX);
@@ -434,36 +439,65 @@ const UploadTool = (() => {
     els.samLoading.classList.remove('hidden');
 
     try {
-      // Get base64 of original image
+      // Resize image to max 1024px for speed
+      const maxDim = 1024;
       const imgCanvas = document.createElement('canvas');
-      imgCanvas.width = state.uploadedImage.width;
-      imgCanvas.height = state.uploadedImage.height;
-      const imgCtx = imgCanvas.getContext('2d');
-      imgCtx.drawImage(state.uploadedImage, 0, 0);
-      const base64 = imgCanvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+      let w = state.uploadedImage.width, h = state.uploadedImage.height;
+      if (w > maxDim || h > maxDim) {
+        const scale = maxDim / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      imgCanvas.width = w;
+      imgCanvas.height = h;
+      imgCanvas.getContext('2d').drawImage(state.uploadedImage, 0, 0, w, h);
+      const base64 = imgCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
 
-      // Call SAM API
-      const response = await fetch('/api/segment', {
+      // Scale click point to resized image
+      const ptX = Math.round(origX * (w / state.uploadedImage.width));
+      const ptY = Math.round(origY * (h / state.uploadedImage.height));
+
+      // Step 1: Create prediction
+      const createRes = await fetch('/api/segment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          image: base64,
-          points: [[origX, origY]],
-          labels: [1],
-        }),
+        body: JSON.stringify({ image: base64, points: [[ptX, ptY]], labels: [1] }),
       });
 
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Segmentation failed');
+      const createData = await createRes.json();
+      
+      if (!createRes.ok || createData.error) {
+        throw new Error(createData.details || createData.error || 'API error');
       }
 
-      const data = await response.json();
-
-      // Load mask from returned URL
-      if (data.mask) {
+      // If completed immediately (Prefer: wait)
+      if (createData.status === 'succeeded' && createData.mask) {
         saveUndoState();
-        await applySamMask(data.mask);
+        await applySamMask(createData.mask);
+        updateApplyButton();
+        return;
+      }
+
+      const predId = createData.id;
+      if (!predId) throw new Error('No prediction ID returned');
+
+      // Step 2: Poll for result (client-side, every 2 sec)
+      let result = null;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const pollRes = await fetch(`/api/segment-poll?id=${predId}`);
+        const data = await pollRes.json();
+
+        if (data.status === 'succeeded') { result = data; break; }
+        if (data.status === 'failed') throw new Error(data.error || 'Сегменттеу сәтсіз');
+      }
+
+      if (!result) throw new Error('Timeout — тым ұзақ уақыт алды');
+
+      // Apply mask
+      if (result.mask) {
+        saveUndoState();
+        await applySamMask(result.mask);
         updateApplyButton();
       }
     } catch (err) {
@@ -475,42 +509,59 @@ const UploadTool = (() => {
     }
   }
 
-  async function applySamMask(maskUrl) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        const mask = state.masks[state.activeMaskIndex];
-        const ctx = mask.canvas.getContext('2d');
+  async function applySamMask(maskData) {
+    // maskData can be a URL string or an object with combined_mask
+    var maskUrl = maskData;
+    if (typeof maskData === 'object') {
+      maskUrl = maskData.combined_mask || maskData[0] || maskData;
+    }
 
-        // Draw SAM mask onto our mask canvas
-        // SAM returns white mask on black bg
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = mask.canvas.width;
-        tempCanvas.height = mask.canvas.height;
-        const tempCtx = tempCanvas.getContext('2d');
-        tempCtx.drawImage(img, 0, 0, tempCanvas.width, tempCanvas.height);
+    try {
+      // Fetch mask as blob to avoid CORS issues
+      var response = await fetch(maskUrl);
+      var blob = await response.blob();
+      var blobUrl = URL.createObjectURL(blob);
 
-        // Extract white pixels as mask
-        const imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
-        const maskData = ctx.getImageData(0, 0, mask.canvas.width, mask.canvas.height);
+      return new Promise(function(resolve, reject) {
+        var img = new Image();
+        img.onload = function() {
+          var mask = state.masks[state.activeMaskIndex];
+          var ctx = mask.canvas.getContext('2d');
 
-        for (let i = 0; i < imgData.data.length; i += 4) {
-          // If SAM pixel is bright → add to mask
-          if (imgData.data[i] > 128) {
-            maskData.data[i] = 255;
-            maskData.data[i + 1] = 255;
-            maskData.data[i + 2] = 255;
-            maskData.data[i + 3] = 255;
+          var tempCanvas = document.createElement('canvas');
+          tempCanvas.width = mask.canvas.width;
+          tempCanvas.height = mask.canvas.height;
+          var tempCtx = tempCanvas.getContext('2d');
+          tempCtx.drawImage(img, 0, 0, tempCanvas.width, tempCanvas.height);
+
+          URL.revokeObjectURL(blobUrl);
+
+          var imgData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+          var maskPixels = ctx.getImageData(0, 0, mask.canvas.width, mask.canvas.height);
+
+          for (var i = 0; i < imgData.data.length; i += 4) {
+            // SAM mask: bright pixels = segmented area
+            if (imgData.data[i] > 128 || imgData.data[i + 1] > 128 || imgData.data[i + 2] > 128) {
+              maskPixels.data[i] = 255;
+              maskPixels.data[i + 1] = 255;
+              maskPixels.data[i + 2] = 255;
+              maskPixels.data[i + 3] = 255;
+            }
           }
-        }
-        ctx.putImageData(maskData, 0, 0);
-        renderMaskOverlay();
-        resolve();
-      };
-      img.onerror = reject;
-      img.src = maskUrl;
-    });
+          ctx.putImageData(maskPixels, 0, 0);
+          renderMaskOverlay();
+          resolve();
+        };
+        img.onerror = function() {
+          URL.revokeObjectURL(blobUrl);
+          reject(new Error('Mask image load failed'));
+        };
+        img.src = blobUrl;
+      });
+    } catch (err) {
+      console.error('[SAM] Mask load error:', err);
+      throw err;
+    }
   }
 
   // ===== MASK LAYERS =====
