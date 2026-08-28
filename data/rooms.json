@@ -120,6 +120,26 @@
         },
         "mask": "images/masks/facade__wall.png",
         "order": 1
+      },
+      {
+        "id": "facade__roof",
+        "name": {
+          "kk": "Шатыр",
+          "ru": "Крыша",
+          "en": "Roof"
+        },
+        "mask": "images/masks/facade__roof.png",
+        "order": 2
+      },
+      {
+        "id": "facade__socle",
+        "name": {
+          "kk": "Цоколь",
+          "ru": "Цоколь",
+          "en": "Socle"
+        },
+        "mask": "images/masks/facade__socle.png",
+        "order": 3
       }
     ]
   },
