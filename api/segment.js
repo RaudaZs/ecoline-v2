@@ -42,7 +42,7 @@ export default async function handler(req, res) {
     if (!createRes.ok) {
       return res.status(500).json({
         error: 'Replicate error',
-        details: prediction.detail || prediction.error || JSON.stringify(prediction),
+        details: JSON.stringify(prediction),
       });
     }
 
