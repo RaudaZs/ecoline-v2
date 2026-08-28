@@ -1,62 +1,60 @@
+// POST /api/segment — SAM 2 (Replicate)
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST only' });
 
-  const { image, points } = req.body;
-  if (!image) return res.status(400).json({ error: 'No image provided' });
+  const { image, points, labels } = req.body;
+  if (!image) return res.status(400).json({ error: 'image required' });
 
   const REPLICATE_TOKEN = process.env.REPLICATE_API_TOKEN;
-  if (!REPLICATE_TOKEN) return res.status(500).json({ error: 'API token not configured' });
+  if (!REPLICATE_TOKEN) return res.status(500).json({ error: 'REPLICATE_API_TOKEN not set' });
 
   try {
-    // 1. Start prediction
-    const startRes = await fetch('https://api.replicate.com/v1/predictions', {
+    const input = {
+      image: `data:image/jpeg;base64,${image}`,
+      multimask_output: false,
+    };
+
+    if (points && points.length > 0) {
+      input.point_coords = points.map(p => p[0] + ',' + p[1]).join(';');
+      input.point_labels = (labels || points.map(function() { return 1; })).join(',');
+    }
+
+    var createRes = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${REPLICATE_TOKEN}`,
+        'Authorization': 'Bearer ' + REPLICATE_TOKEN,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        version: 'fe97b453a6455861e3bec01b4e2e7735cb9a068e89e1c3527783417baa053ee1',
-        input: {
-          image: image,
-          input_points: points || [[500, 375]],
-          input_labels: (points || [[500, 375]]).map(() => 1),
-        },
+        version: 'cbd95fb76192174268b6b303aeeb7a736e8dab0cbc38177f09db79b2299da30b',
+        input: input,
       }),
     });
 
-    const prediction = await startRes.json();
-    if (prediction.error) return res.status(500).json({ error: prediction.error });
+    var prediction = await createRes.json();
 
-    // 2. Poll for result (max 30 seconds)
-    let result = prediction;
-    const pollUrl = prediction.urls?.get || `https://api.replicate.com/v1/predictions/${prediction.id}`;
-    for (let i = 0; i < 30; i++) {
-      if (result.status === 'succeeded') break;
-      if (result.status === 'failed') return res.status(500).json({ error: 'SAM failed' });
-      await new Promise(r => setTimeout(r, 1000));
-      const pollRes = await fetch(pollUrl, {
-        headers: { 'Authorization': `Bearer ${REPLICATE_TOKEN}` },
+    if (!createRes.ok) {
+      return res.status(500).json({
+        error: 'Replicate error',
+        details: prediction.detail || prediction.error || JSON.stringify(prediction),
       });
-      result = await pollRes.json();
     }
 
-    if (result.status !== 'succeeded') {
-      return res.status(500).json({ error: 'Timeout' });
+    if (prediction.status === 'succeeded') {
+      var mask = prediction.output && prediction.output.combined_mask ? prediction.output.combined_mask : prediction.output;
+      return res.status(200).json({ status: 'succeeded', mask: mask, id: prediction.id });
     }
 
-    // 3. Return mask URL
-    res.status(200).json({
-      mask: result.output,
-      status: 'ok',
+    return res.status(200).json({
+      id: prediction.id,
+      status: prediction.status,
     });
-
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 }

@@ -237,7 +237,17 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   .tb-btn span{display:none}
   .pn-grid{grid-template-columns:repeat(7,1fr)}
 }
+/* ══════ UPLOAD BTN ══════ */
+.sb-upload{
+  margin:8px 16px;padding:10px 14px;border-radius:var(--radius);
+  background:linear-gradient(135deg,#2D6A4F,#40916C);color:#fff;
+  font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;
+  transition:all var(--transition);box-shadow:0 2px 8px rgba(45,106,79,.25);
+}
+.sb-upload:hover{transform:translateY(-1px);box-shadow:0 4px 16px rgba(45,106,79,.35)}
+.sb-upload:active{transform:scale(.97)}
 </style>
+<link rel="stylesheet" href="css/upload-tool.css">
 </head>
 <body>
 
@@ -261,6 +271,7 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
       <div class="sb-title" id="txRooms">БӨЛМЕЛЕР</div>
       <div class="sb-rooms" id="roomList"></div>
     </div>
+    <button class="sb-upload" onclick="UploadTool.open()" id="btnUpload">📷 <span id="txUpload">Өз фотоңызды жүктеу</span></button>
     <div class="sb-divider"></div>
     <div class="sb-section" id="surfSec" style="display:none;flex:1;overflow:hidden;display:flex;flex-direction:column">
       <div class="sb-title" id="txSurf">БЕТКЕЙЛЕР</div>
@@ -314,7 +325,7 @@ var darkMode=false;
 
 var ICONS={hallway:'🚪',bedroom:'🛏️',living:'🛋️',kitchen:'🍳',bathroom:'🚿',office:'💻',facade:'🏠',child:'🧒'};
 var CATS={blue:{kk:'Көк',ru:'Синие',en:'Blue'},green:{kk:'Жасыл',ru:'Зелёные',en:'Green'},warm:{kk:'Жылы',ru:'Тёплые',en:'Warm'},light:{kk:'Ашық',ru:'Светлые',en:'Light'},deep:{kk:'Терең',ru:'Глубокие',en:'Deep'},grey:{kk:'Сұр',ru:'Серые',en:'Grey'},purple:{kk:'Күлгін',ru:'Фиолет.',en:'Purple'}};
-var T={rooms:{kk:'БӨЛМЕЛЕР',ru:'КОМНАТЫ',en:'ROOMS'},surf:{kk:'БЕТКЕЙЛЕР',ru:'ПОВЕРХНОСТИ',en:'SURFACES'},colors:{kk:'Түстер',ru:'Цвета',en:'Colors'},search:{kk:'Түс іздеу...',ru:'Поиск цвета...',en:'Search...'},hint:{kk:'Беткей мен түс таңдаңыз',ru:'Выберите поверхность и цвет',en:'Select surface & color'},reset:{kk:'Тазалау',ru:'Сброс',en:'Reset'},dl:{kk:'Жүктеу',ru:'Скачать',en:'Download'},overlay:{kk:'Бөлме таңдаңыз',ru:'Выберите комнату',en:'Select a room'},all:{kk:'Барлығы',ru:'Все',en:'All'}};
+var T={rooms:{kk:'БӨЛМЕЛЕР',ru:'КОМНАТЫ',en:'ROOMS'},surf:{kk:'БЕТКЕЙЛЕР',ru:'ПОВЕРХНОСТИ',en:'SURFACES'},colors:{kk:'Түстер',ru:'Цвета',en:'Colors'},search:{kk:'Түс іздеу...',ru:'Поиск цвета...',en:'Search...'},hint:{kk:'Беткей мен түс таңдаңыз',ru:'Выберите поверхность и цвет',en:'Select surface & color'},reset:{kk:'Тазалау',ru:'Сброс',en:'Reset'},dl:{kk:'Жүктеу',ru:'Скачать',en:'Download'},overlay:{kk:'Бөлме таңдаңыз',ru:'Выберите комнату',en:'Select a room'},all:{kk:'Барлығы',ru:'Все',en:'All'},upload:{kk:'Өз фотоңызды жүктеу',ru:'Загрузить своё фото',en:'Upload your photo'}};
 
 function N(o){return o.name?.[lang]||o.name?.en||''}
 function icon(id){for(var k in ICONS)if(id.includes(k))return ICONS[k];return'🏠'}
@@ -356,6 +367,7 @@ function setLang(l){
   document.getElementById('txReset').textContent=T.reset[l];
   document.getElementById('txDL').textContent=T.dl[l];
   document.getElementById('txOverlay').textContent=T.overlay[l];
+  document.getElementById('txUpload').textContent=T.upload[l];
   renderRooms();if(selRoom)renderLayers(selRoom);renderCats();
 }
 
@@ -523,7 +535,30 @@ function downloadImg(){
 
 function showLoading(s){var el=document.getElementById('loadEl');if(s&&!el){el=document.createElement('div');el.id='loadEl';el.className='loading';document.getElementById('canvasArea').appendChild(el)}else if(!s&&el)el.remove()}
 
+/* ══════ CUSTOM ROOM SUPPORT ══════ */
+window.addEventListener('ecoline:custom-room',function(e){
+  var d=e.detail;selRoom={id:'custom',layers:[],base:null};selLayer=null;layerColors={};maskCache={};
+  var img=new Image();img.onload=function(){
+    var c=document.getElementById('mainCanvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+    c.getContext('2d').drawImage(img,0,0);baseImageData=c.getContext('2d').getImageData(0,0,c.width,c.height);
+    c.style.display='block';document.getElementById('phOverlay').style.display='none';
+    document.getElementById('floatBar').style.display='flex';
+    d.masks.forEach(function(m,i){
+      var ly={id:'custom_'+i,name:{kk:m.name,ru:m.name,en:m.name},order:i};
+      selRoom.layers.push(ly);
+      var mImg=new Image();mImg.onload=function(){
+        var t=document.createElement('canvas');t.width=c.width;t.height=c.height;
+        t.getContext('2d').drawImage(mImg,0,0,c.width,c.height);
+        maskCache[ly.id]=t.getContext('2d').getImageData(0,0,c.width,c.height);
+      };mImg.src=m.dataUrl;
+    });
+    document.getElementById('surfSec').style.display='flex';
+    setTimeout(function(){renderRooms();renderLayers(selRoom)},200);
+  };img.src=d.baseImage;
+});
+
 init();
 </script>
+<script src="js/upload-tool.js"></script>
 </body>
 </html>
