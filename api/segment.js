@@ -20,8 +20,9 @@ export default async function handler(req, res) {
     };
 
     if (points && points.length > 0) {
-      input.point_coords = points.map(p => p[0] + ',' + p[1]).join(';');
-      input.point_labels = (labels || points.map(function() { return 1; })).join(',');
+      input.input_points = points;
+      input.input_labels = (labels || points.map(function() { return 1; }));
+      
     }
 
     var createRes = await fetch('https://api.replicate.com/v1/predictions', {
