@@ -15,10 +15,17 @@ export default async function handler(req, res) {
     var pts = body.points || [[500, 375]];
     var lbls = body.labels || pts.map(function() { return 1; });
 
+    // Validate: at least one positive point (label=1)
+    if (!lbls.includes(1)) {
+      return res.status(400).json({ error: 'At least one positive point (label=1) required' });
+    }
+
+    console.log('SAM request: points=' + pts.length + ', labels=' + lbls.join(';'));
+
     var input = {
       image: 'data:image/jpeg;base64,' + body.image,
       point_coords: pts.map(function(p) { return p[0] + ',' + p[1]; }).join(';'),
-      point_labels: lbls.join(','),
+      point_labels: lbls.join(';'),
       multimask_output: false
     };
 

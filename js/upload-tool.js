@@ -20,6 +20,10 @@ const UploadTool = (() => {
     samLoading: false,
     undoStack: [],
     maxUndo: 20,
+    // SAM multi-point support
+    samPoints: [],         // [{x, y, label}] — label: 1=positive, 0=negative
+    samPointMode: 1,       // 1=positive (қабырға), 0=negative (еден/төбе)
+    samMarkers: [],        // DOM elements for visual markers
   };
 
   // ===== DOM REFS =====
@@ -130,10 +134,24 @@ const UploadTool = (() => {
             </div>
           </div>
 
-          <!-- SAM hints -->
-          <div class="sam-hints hidden" id="sam-hints">
-            <p>🎯 Қабырғаға басыңыз — AI автоматты сегменттейді</p>
-            <p class="hint-small">Бірнеше нүкте басып, дәл аймақ таңдаңыз</p>
+          <!-- SAM control panel -->
+          <div class="sam-panel hidden" id="sam-panel">
+            <div class="sam-panel-row">
+              <span class="sam-panel-label">Нүкте режимі:</span>
+              <button class="sam-mode-btn sam-mode-positive active" id="sam-btn-positive">
+                <span class="sam-mode-dot positive"></span> Қабырға
+              </button>
+              <button class="sam-mode-btn sam-mode-negative" id="sam-btn-negative">
+                <span class="sam-mode-dot negative"></span> Еден / Төбе
+              </button>
+            </div>
+            <div class="sam-panel-row">
+              <button class="sam-action-btn" id="sam-btn-undo-point" title="Соңғы нүктені алу">↩</button>
+              <button class="sam-action-btn sam-clear" id="sam-btn-clear-points" title="Барлық нүктелерді тазалау">🗑</button>
+              <span class="sam-point-counter" id="sam-point-counter">—</span>
+              <button class="sam-run-btn" id="sam-btn-run" disabled>▶ Сегменттеу</button>
+            </div>
+            <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
           <div class="edit-footer">
@@ -143,6 +161,111 @@ const UploadTool = (() => {
         </div>
       </div>
     `;
+    // Inject SAM panel styles
+    if (!document.getElementById('sam-panel-styles')) {
+      const style = document.createElement('style');
+      style.id = 'sam-panel-styles';
+      style.textContent = `
+        .sam-panel {
+          background: rgba(0,0,0,0.85);
+          border-radius: 10px;
+          padding: 10px 14px;
+          margin-bottom: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .sam-panel.hidden { display: none; }
+        .sam-panel-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          flex-wrap: wrap;
+        }
+        .sam-panel-label {
+          color: #ccc;
+          font-size: 12px;
+          font-weight: 500;
+          margin-right: 4px;
+        }
+        .sam-mode-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+          padding: 5px 12px;
+          border-radius: 6px;
+          border: 2px solid transparent;
+          background: transparent;
+          color: #aaa;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.15s;
+        }
+        .sam-mode-btn.sam-mode-positive { border-color: #4CAF50; }
+        .sam-mode-btn.sam-mode-negative { border-color: #f44336; }
+        .sam-mode-btn.sam-mode-positive.active {
+          background: #4CAF50;
+          color: #fff;
+        }
+        .sam-mode-btn.sam-mode-negative.active {
+          background: #f44336;
+          color: #fff;
+        }
+        .sam-mode-dot {
+          width: 8px; height: 8px;
+          border-radius: 50%;
+          display: inline-block;
+        }
+        .sam-mode-dot.positive { background: #4CAF50; }
+        .sam-mode-dot.negative { background: #f44336; }
+        .sam-mode-btn.active .sam-mode-dot { background: #fff; }
+        .sam-action-btn {
+          padding: 4px 10px;
+          border-radius: 5px;
+          border: 1.5px solid #555;
+          background: transparent;
+          color: #ccc;
+          font-size: 13px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .sam-action-btn:hover { background: rgba(255,255,255,0.1); }
+        .sam-point-counter {
+          color: #aaa;
+          font-size: 11px;
+          margin-left: auto;
+          min-width: 60px;
+          text-align: right;
+        }
+        .sam-run-btn {
+          padding: 6px 16px;
+          border-radius: 6px;
+          border: none;
+          background: #2196F3;
+          color: #fff;
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: opacity 0.15s;
+        }
+        .sam-run-btn:disabled {
+          opacity: 0.4;
+          cursor: not-allowed;
+        }
+        .sam-run-btn:not(:disabled):hover {
+          background: #1976D2;
+        }
+        .sam-hint-text {
+          color: #999;
+          font-size: 11px;
+          margin: 0;
+          line-height: 1.4;
+        }
+      `;
+      document.head.appendChild(style);
+    }
+
     document.body.appendChild(modal);
 
     // Cache refs
@@ -169,7 +292,13 @@ const UploadTool = (() => {
       brushSizeValue: modal.querySelector('#brush-size-value'),
       maskLayers: modal.querySelector('#mask-layers'),
       samLoading: modal.querySelector('#sam-loading'),
-      samHints: modal.querySelector('#sam-hints'),
+      samPanel: modal.querySelector('#sam-panel'),
+      samBtnPositive: modal.querySelector('#sam-btn-positive'),
+      samBtnNegative: modal.querySelector('#sam-btn-negative'),
+      samBtnUndoPoint: modal.querySelector('#sam-btn-undo-point'),
+      samBtnClearPoints: modal.querySelector('#sam-btn-clear-points'),
+      samBtnRun: modal.querySelector('#sam-btn-run'),
+      samPointCounter: modal.querySelector('#sam-point-counter'),
     };
   }
 
@@ -206,6 +335,13 @@ const UploadTool = (() => {
     els.canvasCursor.addEventListener('touchstart', onTouchStart, { passive: false });
     els.canvasCursor.addEventListener('touchmove', onTouchMove, { passive: false });
     els.canvasCursor.addEventListener('touchend', onPointerUp);
+
+    // SAM panel controls
+    els.samBtnPositive.addEventListener('click', () => setSamPointMode(1));
+    els.samBtnNegative.addEventListener('click', () => setSamPointMode(0));
+    els.samBtnUndoPoint.addEventListener('click', undoSamPoint);
+    els.samBtnClearPoints.addEventListener('click', clearSamPoints);
+    els.samBtnRun.addEventListener('click', runSamSegmentation);
 
     // Actions
     els.btnUndo.addEventListener('click', undo);
@@ -374,16 +510,23 @@ const UploadTool = (() => {
     ctx.clearRect(0, 0, els.canvasCursor.width, els.canvasCursor.height);
 
     if (state.mode === 'sam') {
-      // Crosshair cursor
-      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      // Redraw existing markers first (since we clearRect above)
+      redrawSamMarkers();
+      // Crosshair cursor colored by current mode
+      const isPos = state.samPointMode === 1;
+      ctx.strokeStyle = isPos ? 'rgba(76,175,80,0.9)' : 'rgba(244,67,54,0.9)';
       ctx.lineWidth = 2;
-      const size = 12;
+      const size = 14;
       ctx.beginPath();
       ctx.moveTo(pos.x - size, pos.y); ctx.lineTo(pos.x + size, pos.y);
       ctx.moveTo(pos.x, pos.y - size); ctx.lineTo(pos.x, pos.y + size);
       ctx.stroke();
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      // Shadow outline
+      ctx.strokeStyle = 'rgba(0,0,0,0.4)';
       ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pos.x - size, pos.y); ctx.lineTo(pos.x + size, pos.y);
+      ctx.moveTo(pos.x, pos.y - size); ctx.lineTo(pos.x, pos.y + size);
       ctx.stroke();
     } else {
       // Circle cursor
@@ -418,9 +561,121 @@ const UploadTool = (() => {
     });
   }
 
-  // ===== SAM INTEGRATION =====
-  async function handleSamClick(e) {
+  // ===== SAM INTEGRATION (Multi-Point with Negative) =====
+
+  // -- Point mode toggle --
+  function setSamPointMode(mode) {
+    state.samPointMode = mode;
+    els.samBtnPositive.classList.toggle('active', mode === 1);
+    els.samBtnNegative.classList.toggle('active', mode === 0);
+  }
+
+  // -- Collect point on click (no API call yet) --
+  function handleSamClick(e) {
     if (state.samLoading) return;
+
+    const pos = getCanvasPos(e);
+
+    // Store point with its label
+    state.samPoints.push({
+      x: Math.round(pos.x),
+      y: Math.round(pos.y),
+      label: state.samPointMode,
+    });
+
+    // Draw visual marker on cursor canvas
+    addSamMarker(pos.x, pos.y, state.samPointMode);
+    updateSamPointCounter();
+
+    console.log('[SAM] Point added:', pos.x, pos.y, 'label:', state.samPointMode,
+      '| Total:', state.samPoints.length);
+  }
+
+  // -- Draw marker dot on the cursor canvas --
+  function addSamMarker(x, y, label) {
+    const ctx = els.canvasCursor.getContext('2d');
+    const isPos = label === 1;
+
+    // Outer ring
+    ctx.beginPath();
+    ctx.arc(x, y, 10, 0, Math.PI * 2);
+    ctx.fillStyle = isPos ? 'rgba(76, 175, 80, 0.7)' : 'rgba(244, 67, 54, 0.7)';
+    ctx.fill();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Symbol: + or −
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 12px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(isPos ? '+' : '−', x, y);
+
+    // Store marker info for redraw
+    state.samMarkers.push({ x, y, label });
+  }
+
+  // -- Redraw all markers (after undo or clear) --
+  function redrawSamMarkers() {
+    // Only redraw markers; cursor canvas is shared, so don't clearRect the whole thing
+    // We redraw all markers after a clear
+    const ctx = els.canvasCursor.getContext('2d');
+    ctx.clearRect(0, 0, els.canvasCursor.width, els.canvasCursor.height);
+    state.samMarkers.forEach(m => {
+      const isPos = m.label === 1;
+      ctx.beginPath();
+      ctx.arc(m.x, m.y, 10, 0, Math.PI * 2);
+      ctx.fillStyle = isPos ? 'rgba(76, 175, 80, 0.7)' : 'rgba(244, 67, 54, 0.7)';
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(isPos ? '+' : '−', m.x, m.y);
+    });
+  }
+
+  // -- Update counter display --
+  function updateSamPointCounter() {
+    const pos = state.samPoints.filter(p => p.label === 1).length;
+    const neg = state.samPoints.filter(p => p.label === 0).length;
+    els.samPointCounter.textContent = pos > 0 || neg > 0
+      ? `${pos} ✓  ${neg} ✕`
+      : '—';
+    els.samBtnRun.disabled = pos === 0; // Need at least 1 positive
+  }
+
+  // -- Undo last point --
+  function undoSamPoint() {
+    if (state.samPoints.length === 0) return;
+    state.samPoints.pop();
+    state.samMarkers.pop();
+    redrawSamMarkers();
+    updateSamPointCounter();
+  }
+
+  // -- Clear all points --
+  function clearSamPoints() {
+    state.samPoints = [];
+    state.samMarkers = [];
+    const ctx = els.canvasCursor.getContext('2d');
+    ctx.clearRect(0, 0, els.canvasCursor.width, els.canvasCursor.height);
+    updateSamPointCounter();
+  }
+
+  // -- Run segmentation with all collected points --
+  async function runSamSegmentation() {
+    if (state.samLoading || state.samPoints.length === 0) return;
+
+    const hasPositive = state.samPoints.some(p => p.label === 1);
+    if (!hasPositive) {
+      alert('Кем дегенде 1 positive (жасыл) нүкте қойыңыз!');
+      return;
+    }
 
     // Check if running locally
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -429,14 +684,10 @@ const UploadTool = (() => {
       return;
     }
 
-    const pos = getCanvasPos(e);
-    const scaleX = state.uploadedImage.width / els.canvasBase.width;
-    const scaleY = state.uploadedImage.height / els.canvasBase.height;
-    const origX = Math.round(pos.x * scaleX);
-    const origY = Math.round(pos.y * scaleY);
-
     state.samLoading = true;
     els.samLoading.classList.remove('hidden');
+    els.samBtnRun.disabled = true;
+    els.samBtnRun.textContent = '⏳ Күтіңіз...';
 
     try {
       // Resize image to max 1024px for speed
@@ -453,15 +704,21 @@ const UploadTool = (() => {
       imgCanvas.getContext('2d').drawImage(state.uploadedImage, 0, 0, w, h);
       const base64 = imgCanvas.toDataURL('image/jpeg', 0.8).split(',')[1];
 
-      // Scale click point to resized image
-      const ptX = Math.round(origX * (w / state.uploadedImage.width));
-      const ptY = Math.round(origY * (h / state.uploadedImage.height));
+      // Scale all points to resized image coordinates
+      const scaleToResized = w / state.uploadedImage.width;
+      const apiPoints = state.samPoints.map(p => [
+        Math.round(p.x * scaleToResized),
+        Math.round(p.y * scaleToResized),
+      ]);
+      const apiLabels = state.samPoints.map(p => p.label);
+
+      console.log('[SAM] Sending', apiPoints.length, 'points:', apiPoints, 'labels:', apiLabels);
 
       // Step 1: Create prediction
       const createRes = await fetch('/api/segment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64, points: [[ptX, ptY]], labels: [1] }),
+        body: JSON.stringify({ image: base64, points: apiPoints, labels: apiLabels }),
       });
 
       const createData = await createRes.json();
@@ -470,10 +727,11 @@ const UploadTool = (() => {
         throw new Error(createData.details || createData.error || 'API error');
       }
 
-      // If completed immediately (Prefer: wait)
+      // If completed immediately
       if (createData.status === 'succeeded' && createData.mask) {
         saveUndoState();
         await applySamMask(createData.mask);
+        clearSamPoints();
         updateApplyButton();
         return;
       }
@@ -481,7 +739,7 @@ const UploadTool = (() => {
       const predId = createData.id;
       if (!predId) throw new Error('No prediction ID returned');
 
-      // Step 2: Poll for result (client-side, every 2 sec)
+      // Step 2: Poll for result (every 2 sec, max 30 tries)
       let result = null;
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 2000));
@@ -494,10 +752,11 @@ const UploadTool = (() => {
 
       if (!result) throw new Error('Timeout — тым ұзақ уақыт алды');
 
-      // Apply mask
+      // Apply mask and clear points
       if (result.mask) {
         saveUndoState();
         await applySamMask(result.mask);
+        clearSamPoints();
         updateApplyButton();
       }
     } catch (err) {
@@ -506,6 +765,8 @@ const UploadTool = (() => {
     } finally {
       state.samLoading = false;
       els.samLoading.classList.add('hidden');
+      els.samBtnRun.textContent = '▶ Сегменттеу';
+      updateSamPointCounter(); // Re-enable run btn if points remain
     }
   }
 
@@ -664,6 +925,11 @@ const UploadTool = (() => {
 
   // ===== MODE =====
   function setMode(mode) {
+    // Clear SAM points when leaving SAM mode
+    if (state.mode === 'sam' && mode !== 'sam') {
+      clearSamPoints();
+    }
+
     state.mode = mode;
     [els.btnBrush, els.btnSam, els.btnEraser].forEach(b => b.classList.remove('active'));
 
@@ -671,8 +937,13 @@ const UploadTool = (() => {
     else if (mode === 'sam') els.btnSam.classList.add('active');
     else if (mode === 'eraser') els.btnEraser.classList.add('active');
 
-    els.samHints.classList.toggle('hidden', mode !== 'sam');
+    els.samPanel.classList.toggle('hidden', mode !== 'sam');
     els.canvasCursor.style.cursor = mode === 'sam' ? 'crosshair' : 'none';
+
+    // Reset SAM point mode to positive when entering SAM
+    if (mode === 'sam') {
+      setSamPointMode(1);
+    }
   }
 
   // ===== APPLY MASKS → MAIN VISUALIZER =====
@@ -726,6 +997,8 @@ const UploadTool = (() => {
     state.uploadedImage = null;
     state.masks = [];
     state.undoStack = [];
+    state.samPoints = [];
+    state.samMarkers = [];
     els.fileInput.value = '';
     showStep('upload');
   }
