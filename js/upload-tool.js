@@ -497,9 +497,17 @@ const UploadTool = (() => {
     const ctx = mask.canvas.getContext('2d');
     ctx.globalCompositeOperation = state.mode === 'eraser' ? 'destination-out' : 'source-over';
     ctx.fillStyle = 'white';
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, state.brushSize / 2, 0, Math.PI * 2);
-    ctx.fill();
+
+    if (state.mode === 'eraser') {
+      // Төртбұрышты өшіргіш
+      const size = state.brushSize;
+      ctx.fillRect(pos.x - size / 2, pos.y - size / 2, size, size);
+    } else {
+      // Дөңгелек қылқалам
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, state.brushSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     renderMaskOverlay();
   }
@@ -528,9 +536,24 @@ const UploadTool = (() => {
       ctx.moveTo(pos.x - size, pos.y); ctx.lineTo(pos.x + size, pos.y);
       ctx.moveTo(pos.x, pos.y - size); ctx.lineTo(pos.x, pos.y + size);
       ctx.stroke();
+    } else if (state.mode === 'eraser') {
+      // Төртбұрышты өшіргіш курсоры
+      const size = state.brushSize;
+      ctx.strokeStyle = 'rgba(255,100,100,0.8)';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(pos.x - size / 2, pos.y - size / 2, size, size);
+      // Ішіне × белгісі
+      ctx.strokeStyle = 'rgba(255,100,100,0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(pos.x - size / 4, pos.y - size / 4);
+      ctx.lineTo(pos.x + size / 4, pos.y + size / 4);
+      ctx.moveTo(pos.x + size / 4, pos.y - size / 4);
+      ctx.lineTo(pos.x - size / 4, pos.y + size / 4);
+      ctx.stroke();
     } else {
-      // Circle cursor
-      ctx.strokeStyle = state.mode === 'eraser' ? 'rgba(255,100,100,0.8)' : 'rgba(255,255,255,0.8)';
+      // Дөңгелек қылқалам курсоры
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, state.brushSize / 2, 0, Math.PI * 2);
