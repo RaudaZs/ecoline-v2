@@ -11,7 +11,7 @@
 const UploadTool = (() => {
   // ===== STATE =====
   let state = {
-    mode: null,           // 'brush' | 'sam' | null
+    mode: null,           // 'brush' | 'sam' | 'eraser' | 'line' | 'lineErase' | 'rectErase'
     isDrawing: false,
     brushSize: 30,
     uploadedImage: null,   // HTMLImageElement
@@ -24,6 +24,9 @@ const UploadTool = (() => {
     samPoints: [],         // [{x, y, label}] — label: 1=positive, 0=negative
     samPointMode: 1,       // 1=positive (қабырға), 0=negative (еден/төбе)
     samMarkers: [],        // DOM elements for visual markers
+    // Shape tools (line, rectErase)
+    isShaping: false,
+    shapeStart: null,      // {x, y} — shape start point
   };
 
   // ===== DOM REFS =====
@@ -88,6 +91,28 @@ const UploadTool = (() => {
                   <path d="M20 20H7L3 16c-.8-.8-.8-2 0-2.8L14.4 1.8c.8-.8 2-.8 2.8 0L21 5.6"/>
                 </svg>
                 <span>Өшіргіш</span>
+              </button>
+            </div>
+
+            <div class="toolbar-group">
+              <button class="tool-btn" id="btn-line" title="Сызық бояғыш">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="4" y1="20" x2="20" y2="4"/>
+                </svg>
+                <span>╱Сызық</span>
+              </button>
+              <button class="tool-btn" id="btn-lineErase" title="Сызық өшіргіш">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="4" y1="20" x2="20" y2="4"/>
+                  <line x1="4" y1="4" x2="20" y2="20" stroke-opacity="0.4"/>
+                </svg>
+                <span>╲СӨш</span>
+              </button>
+              <button class="tool-btn" id="btn-rectErase" title="Төртбұрыш өшіргіш">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="4 2"/>
+                </svg>
+                <span>▭Өшір</span>
               </button>
             </div>
 
@@ -283,6 +308,9 @@ const UploadTool = (() => {
       btnBrush: modal.querySelector('#btn-brush'),
       btnSam: modal.querySelector('#btn-sam'),
       btnEraser: modal.querySelector('#btn-eraser'),
+      btnLine: modal.querySelector('#btn-line'),
+      btnLineErase: modal.querySelector('#btn-lineErase'),
+      btnRectErase: modal.querySelector('#btn-rectErase'),
       btnUndo: modal.querySelector('#btn-undo'),
       btnClear: modal.querySelector('#btn-clear'),
       btnBack: modal.querySelector('#btn-back'),
@@ -319,6 +347,9 @@ const UploadTool = (() => {
     els.btnBrush.addEventListener('click', () => setMode('brush'));
     els.btnSam.addEventListener('click', () => setMode('sam'));
     els.btnEraser.addEventListener('click', () => setMode('eraser'));
+    els.btnLine.addEventListener('click', () => setMode('line'));
+    els.btnLineErase.addEventListener('click', () => setMode('lineErase'));
+    els.btnRectErase.addEventListener('click', () => setMode('rectErase'));
 
     // Brush size
     els.brushSize.addEventListener('input', e => {
@@ -438,11 +469,24 @@ const UploadTool = (() => {
   }
 
   // ===== DRAWING =====
+  const SHAPE_MODES = ['line', 'lineErase', 'rectErase'];
+  const ERASE_SHAPE_MODES = ['lineErase', 'rectErase'];
+
   function onPointerDown(e) {
     if (state.mode === 'sam') {
       handleSamClick(e);
       return;
     }
+
+    // Shape modes: start drag
+    if (SHAPE_MODES.includes(state.mode)) {
+      const pos = getCanvasPos(e);
+      state.isShaping = true;
+      state.shapeStart = { x: pos.x, y: pos.y };
+      saveUndoState();
+      return;
+    }
+
     if (state.mode !== 'brush' && state.mode !== 'eraser') return;
 
     state.isDrawing = true;
@@ -452,11 +496,28 @@ const UploadTool = (() => {
 
   function onPointerMove(e) {
     updateCursor(e);
+
+    // Shape preview
+    if (state.isShaping && state.shapeStart) {
+      drawShapePreview(e);
+      return;
+    }
+
     if (!state.isDrawing) return;
     draw(e);
   }
 
-  function onPointerUp() {
+  function onPointerUp(e) {
+    // Shape commit
+    if (state.isShaping && state.shapeStart) {
+      commitShape(e);
+      state.isShaping = false;
+      state.shapeStart = null;
+      updateApplyButton();
+      renderMaskOverlay();
+      return;
+    }
+
     state.isDrawing = false;
     updateApplyButton();
   }
@@ -512,6 +573,103 @@ const UploadTool = (() => {
     renderMaskOverlay();
   }
 
+  // ===== SHAPE PREVIEW (on cursor canvas while dragging) =====
+  function drawShapePreview(e) {
+    const pos = getCanvasPos(e);
+    const ctx = els.canvasCursor.getContext('2d');
+    ctx.clearRect(0, 0, els.canvasCursor.width, els.canvasCursor.height);
+
+    const s = state.shapeStart;
+    const isErase = ERASE_SHAPE_MODES.includes(state.mode);
+
+    ctx.strokeStyle = isErase ? 'rgba(255,80,80,0.7)' : 'rgba(255,255,255,0.7)';
+    ctx.fillStyle = isErase ? 'rgba(255,0,0,0.12)' : 'rgba(255,255,255,0.15)';
+    ctx.setLineDash([6, 4]);
+
+    if (state.mode === 'line' || state.mode === 'lineErase') {
+      // Line preview — with brush width
+      ctx.lineWidth = state.brushSize;
+      ctx.lineCap = 'round';
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.4;
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // Start/end dots
+      ctx.fillStyle = isErase ? '#f44' : '#fff';
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 4, 0, Math.PI * 2);
+      ctx.fill();
+
+    } else if (state.mode === 'rectErase') {
+      // Rectangle preview — drag to resize
+      const x = Math.min(s.x, pos.x);
+      const y = Math.min(s.y, pos.y);
+      const w = Math.abs(pos.x - s.x);
+      const h = Math.abs(pos.y - s.y);
+
+      ctx.lineWidth = 2;
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeRect(x, y, w, h);
+
+      // Size label
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.font = '12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${Math.round(w)}×${Math.round(h)}`, (s.x + pos.x) / 2, Math.min(s.y, pos.y) - 8);
+    }
+
+    ctx.setLineDash([]);
+  }
+
+  // ===== COMMIT SHAPE (on mouseup) =====
+  function commitShape(e) {
+    const pos = getCanvasPos(e);
+    const mask = state.masks[state.activeMaskIndex];
+    if (!mask) return;
+
+    const ctx = mask.canvas.getContext('2d');
+    const s = state.shapeStart;
+    const isErase = ERASE_SHAPE_MODES.includes(state.mode);
+
+    ctx.globalCompositeOperation = isErase ? 'destination-out' : 'source-over';
+    ctx.fillStyle = isErase ? 'rgba(0,0,0,1)' : '#ffffff';
+    ctx.strokeStyle = isErase ? 'rgba(0,0,0,1)' : '#ffffff';
+
+    if (state.mode === 'line' || state.mode === 'lineErase') {
+      // Commit line with brush width
+      ctx.lineWidth = state.brushSize;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+
+    } else if (state.mode === 'rectErase') {
+      // Commit filled rectangle erase
+      const x = Math.min(s.x, pos.x);
+      const y = Math.min(s.y, pos.y);
+      const w = Math.abs(pos.x - s.x);
+      const h = Math.abs(pos.y - s.y);
+      if (w > 2 && h > 2) {
+        ctx.fillRect(x, y, w, h);
+      }
+    }
+
+    ctx.globalCompositeOperation = 'source-over';
+
+    // Clear preview
+    const cursorCtx = els.canvasCursor.getContext('2d');
+    cursorCtx.clearRect(0, 0, els.canvasCursor.width, els.canvasCursor.height);
+  }
+
   function updateCursor(e) {
     const pos = getCanvasPos(e);
     const ctx = els.canvasCursor.getContext('2d');
@@ -551,6 +709,35 @@ const UploadTool = (() => {
       ctx.moveTo(pos.x + size / 4, pos.y - size / 4);
       ctx.lineTo(pos.x - size / 4, pos.y + size / 4);
       ctx.stroke();
+    } else if (state.mode === 'line' || state.mode === 'lineErase') {
+      // Line tool — brush width preview + crosshair
+      const isErase = state.mode === 'lineErase';
+      ctx.strokeStyle = isErase ? 'rgba(255,80,80,0.3)' : 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = state.brushSize;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pos.x - 15, pos.y);
+      ctx.lineTo(pos.x + 15, pos.y);
+      ctx.stroke();
+      // Crosshair
+      ctx.strokeStyle = isErase ? 'rgba(255,80,80,0.9)' : 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(pos.x - 14, pos.y); ctx.lineTo(pos.x + 14, pos.y);
+      ctx.moveTo(pos.x, pos.y - 14); ctx.lineTo(pos.x, pos.y + 14);
+      ctx.stroke();
+    } else if (state.mode === 'rectErase') {
+      // RectErase — crosshair + dashed rect hint
+      ctx.strokeStyle = 'rgba(255,80,80,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(pos.x - 14, pos.y); ctx.lineTo(pos.x + 14, pos.y);
+      ctx.moveTo(pos.x, pos.y - 14); ctx.lineTo(pos.x, pos.y + 14);
+      ctx.stroke();
+      ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = 'rgba(255,80,80,0.4)';
+      ctx.strokeRect(pos.x - 20, pos.y - 15, 40, 30);
+      ctx.setLineDash([]);
     } else {
       // Дөңгелек қылқалам курсоры
       ctx.strokeStyle = 'rgba(255,255,255,0.8)';
@@ -954,14 +1141,25 @@ const UploadTool = (() => {
     }
 
     state.mode = mode;
-    [els.btnBrush, els.btnSam, els.btnEraser].forEach(b => b.classList.remove('active'));
+    const allBtns = [els.btnBrush, els.btnSam, els.btnEraser, els.btnLine, els.btnLineErase, els.btnRectErase];
+    allBtns.forEach(b => b.classList.remove('active'));
 
     if (mode === 'brush') els.btnBrush.classList.add('active');
     else if (mode === 'sam') els.btnSam.classList.add('active');
     else if (mode === 'eraser') els.btnEraser.classList.add('active');
+    else if (mode === 'line') els.btnLine.classList.add('active');
+    else if (mode === 'lineErase') els.btnLineErase.classList.add('active');
+    else if (mode === 'rectErase') els.btnRectErase.classList.add('active');
 
     els.samPanel.classList.toggle('hidden', mode !== 'sam');
-    els.canvasCursor.style.cursor = mode === 'sam' ? 'crosshair' : 'none';
+
+    // Cursor style
+    const shapeModes = ['line', 'lineErase', 'rectErase'];
+    if (mode === 'sam' || shapeModes.includes(mode)) {
+      els.canvasCursor.style.cursor = 'crosshair';
+    } else {
+      els.canvasCursor.style.cursor = 'none';
+    }
 
     // Reset SAM point mode to positive when entering SAM
     if (mode === 'sam') {
