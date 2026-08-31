@@ -62,7 +62,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         // SDXL Inpainting model
-        version: 'c11bac58203367db93a3c552bd49a25a5c840b21fead3e23a4e4b5e08e05e583',
+        version: 'aca001c8b137114d5e594c68f7084ae6d82f364758aab8d997b233e8ef3c4d93',
         input: {
           image: imageData,
           mask: maskData,
