@@ -22,12 +22,18 @@ export default async function handler(req, res) {
 
     console.log('SAM request: points=' + pts.length + ', labels=' + lbls.join(';'));
 
-    var input = {
+        var input = {
       image: 'data:image/jpeg;base64,' + body.image,
       point_coords: pts.map(function(p) { return p[0] + ',' + p[1]; }).join(';'),
-      point_labels: lbls.join(','),
-            multimask_output: true
+      point_labels: lbls.join(';'),
+      multimask_output: true,
+      use_m2m: true
     };
+      
+      
+      
+            
+    
 
     var r = await fetch('https://api.replicate.com/v1/predictions', {
       method: 'POST',
