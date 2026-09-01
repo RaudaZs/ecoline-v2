@@ -25,8 +25,12 @@ export default async function handler(req, res) {
 
     if (prediction.status === 'succeeded') {
       // SAM 2 returns { combined_mask: url, individual_masks: [url, ...] }
-            const masks = prediction.output?.individual_masks || [];
-      const mask = masks[0] || prediction.output?.combined_mask || prediction.output;
+                  // multimask_output=true: 3 mask қайтарады, ең кішісін (тек қабырға) аламыз
+      const masks = prediction.output?.individual_masks || [];
+      console.log('Masks count:', masks.length);
+      // masks[0] = ең кіші (specific), masks[2] = ең үлкен (wide)
+      const mask = masks.length > 0 ? masks[0] : (prediction.output?.combined_mask || prediction.output);
+      
       return res.status(200).json({ status: 'succeeded', mask });
     }
 

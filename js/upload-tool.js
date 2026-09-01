@@ -922,7 +922,7 @@ const UploadTool = (() => {
       ]);
       const apiLabels = state.samPoints.map(p => p.label);
 
-      console.log('[SAM] Sending', apiPoints.length, 'points:', apiPoints, 'labels:', apiLabels);
+      console.log('[SAM] Sending', apiPoints.length, 'points:', JSON.stringify(apiPoints), 'labels:', JSON.stringify(apiLabels), 'imgSize:', w, 'x', h);
 
       // Step 1: Create prediction
       const createRes = await fetch('/api/segment', {
