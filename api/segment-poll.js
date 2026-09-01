@@ -25,7 +25,8 @@ export default async function handler(req, res) {
 
     if (prediction.status === 'succeeded') {
       // SAM 2 returns { combined_mask: url, individual_masks: [url, ...] }
-      const mask = prediction.output?.combined_mask || prediction.output;
+            const masks = prediction.output?.individual_masks || [];
+      const mask = masks[0] || prediction.output?.combined_mask || prediction.output;
       return res.status(200).json({ status: 'succeeded', mask });
     }
 
