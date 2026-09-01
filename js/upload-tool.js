@@ -955,6 +955,7 @@ const UploadTool = (() => {
         await new Promise(r => setTimeout(r, 2000));
         const pollRes = await fetch(`/api/segment-poll?id=${predId}`);
         const data = await pollRes.json();
+          console.log('[SAM] Poll:', data.status, data.mask || '');
 
         if (data.status === 'succeeded') { result = data; break; }
         if (data.status === 'failed') throw new Error(data.error || 'Сегменттеу сәтсіз');
@@ -989,7 +990,7 @@ const UploadTool = (() => {
 
     try {
       // Fetch mask as blob to avoid CORS issues
-      var response = await fetch(maskUrl);
+          console.log('[SAM] Loading mask via proxy:', maskUrl); var response = await fetch('/api/proxy-image?url=' + encodeURIComponent(maskUrl));
       var blob = await response.blob();
       var blobUrl = URL.createObjectURL(blob);
 
