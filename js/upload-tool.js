@@ -179,6 +179,12 @@ const UploadTool = (() => {
             <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
+          <!-- Auto-segment button -->
+          <div class="auto-seg-bar hidden" id="auto-seg-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(124,58,237,0.1);border-radius:10px;margin-bottom:8px">
+            <button class="sam-run-btn" id="btn-auto-segment" style="background:#7c3aed;padding:7px 16px;font-size:13px;border-radius:7px;border:none;color:#fff;font-weight:600;cursor:pointer">🔮 Авто сегмент</button>
+            <span id="auto-seg-status" style="color:#a78bfa;font-size:12px"></span>
+          </div>
+
           <div class="edit-footer">
             <button class="btn-secondary" id="btn-back">← Артқа</button>
             <button class="btn-primary" id="btn-apply" disabled>Қолдану ✓</button>
@@ -327,6 +333,10 @@ const UploadTool = (() => {
       samBtnClearPoints: modal.querySelector('#sam-btn-clear-points'),
       samBtnRun: modal.querySelector('#sam-btn-run'),
       samPointCounter: modal.querySelector('#sam-point-counter'),
+      // Auto-segment
+      autoSegBar: modal.querySelector('#auto-seg-bar'),
+      btnAutoSegment: modal.querySelector('#btn-auto-segment'),
+      autoSegStatus: modal.querySelector('#auto-seg-status'),
     };
   }
 
@@ -373,6 +383,9 @@ const UploadTool = (() => {
     els.samBtnUndoPoint.addEventListener('click', undoSamPoint);
     els.samBtnClearPoints.addEventListener('click', clearSamPoints);
     els.samBtnRun.addEventListener('click', runSamSegmentation);
+
+    // Auto-segment
+    els.btnAutoSegment.addEventListener('click', runAutoSegment);
 
     // Actions
     els.btnUndo.addEventListener('click', undo);
@@ -459,6 +472,12 @@ const UploadTool = (() => {
     state.undoStack = [];
     renderLayers();
     updateApplyButton();
+
+    // Show auto-segment bar (only online)
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    els.autoSegBar.classList.toggle('hidden', isLocal);
+    els.autoSegBar.style.display = isLocal ? 'none' : 'flex';
+    els.autoSegStatus.textContent = '';
   }
 
   function createMaskCanvas(w, h) {
@@ -1261,6 +1280,230 @@ const UploadTool = (() => {
     return `rgba(${r},${g},${b},${alpha})`;
   }
 
+  // ===== AUTO-SEGMENTATION (SegFormer ADE20K) =====
+  const ADE20K_TARGETS = [
+    { key: 'wall',    classId: 0, color: [120, 120, 120], label: 'Қабырға', btnColor: '#6366f1' },
+    { key: 'ceiling', classId: 5, color: [120, 120,  80], label: 'Төбе',    btnColor: '#f59e0b' },
+    { key: 'floor',   classId: 3, color: [ 80,  50,  50], label: 'Еден',    btnColor: '#10b981' }
+  ];
+  let autoSegMasks = {}; // { wall: {canvas, ratio}, ceiling: {...}, floor: {...} }
+
+  async function runAutoSegment() {
+    if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
+
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (isLocal) { alert('Авто-сегменттеу тек онлайн нұсқада жұмыс істейді (Vercel).'); return; }
+
+    els.btnAutoSegment.disabled = true;
+    els.btnAutoSegment.textContent = '⏳ Күтіңіз...';
+    els.autoSegStatus.textContent = 'Сегменттеуде...';
+
+    try {
+      // 1) Resize image to max 1024 & get base64 (SAM pattern)
+      const maxDim = 1024;
+      const imgCanvas = document.createElement('canvas');
+      let w = state.uploadedImage.width, h = state.uploadedImage.height;
+      if (w > maxDim || h > maxDim) {
+        const scale = maxDim / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+      imgCanvas.width = w;
+      imgCanvas.height = h;
+      imgCanvas.getContext('2d').drawImage(state.uploadedImage, 0, 0, w, h);
+      const base64 = imgCanvas.toDataURL('image/jpeg', 0.85);
+
+      // 2) Create prediction
+      const createRes = await fetch('/api/auto-segment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64 })
+      });
+      const createData = await createRes.json();
+      if (!createRes.ok) throw new Error(createData.error || 'API error');
+      const predId = createData.id;
+      if (!predId) throw new Error('No prediction ID');
+      console.log('[AutoSeg] prediction:', predId);
+
+      // 3) Poll for result
+      let segMapUrl = null;
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const pollRes = await fetch('/api/auto-segment-poll?id=' + predId);
+        const data = await pollRes.json();
+        els.autoSegStatus.textContent = `⏳ ${i + 1}/60...`;
+
+        if (data.status === 'succeeded') {
+          const out = data.output;
+          segMapUrl = typeof out === 'string' ? out : (Array.isArray(out) ? out[0] : null);
+          if (!segMapUrl) throw new Error('Күтпеген output форматы');
+          break;
+        }
+        if (data.status === 'failed' || data.status === 'canceled') {
+          throw new Error(data.error || 'Prediction ' + data.status);
+        }
+      }
+      if (!segMapUrl) throw new Error('Timeout — 2 минут өтті');
+      console.log('[AutoSeg] segMap URL:', segMapUrl);
+
+      // 4) Load segmentation map via proxy
+      const proxyUrl = '/api/proxy-image?url=' + encodeURIComponent(segMapUrl);
+      const resp = await fetch(proxyUrl);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      const segImg = await new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => res(img);
+        img.onerror = () => rej(new Error('SegMap load failed'));
+        img.src = blobUrl;
+      });
+
+      // 5) Extract masks from segmentation map
+      autoSegMasks = extractAutoSegMasks(segImg);
+      URL.revokeObjectURL(blobUrl);
+
+      // 6) Show layer selection UI
+      showAutoSegPicker();
+
+      els.autoSegStatus.textContent = '✅ Дайын!';
+      els.btnAutoSegment.textContent = '🔮 Қайта сегмент';
+
+    } catch (err) {
+      console.error('[AutoSeg] Error:', err);
+      alert('Авто-сегменттеу қатесі: ' + err.message);
+      els.autoSegStatus.textContent = '❌ Қате';
+    } finally {
+      els.btnAutoSegment.disabled = false;
+    }
+  }
+
+  function extractAutoSegMasks(segImg) {
+    const w = segImg.naturalWidth, h = segImg.naturalHeight;
+    const tmp = document.createElement('canvas');
+    tmp.width = w; tmp.height = h;
+    const tmpCtx = tmp.getContext('2d');
+    tmpCtx.drawImage(segImg, 0, 0);
+    const pixels = tmpCtx.getImageData(0, 0, w, h).data;
+
+    // Build class map
+    const classMap = new Uint8Array(w * h);
+    classMap.fill(255);
+
+    for (let i = 0; i < w * h; i++) {
+      const off = i * 4;
+      const r = pixels[off], g = pixels[off + 1], b = pixels[off + 2];
+
+      // Method 1: Grayscale index map (R=G=B < 150)
+      if (r === g && g === b && r < 150) {
+        classMap[i] = r;
+        continue;
+      }
+
+      // Method 2: ADE20K palette color matching
+      let bestDist = Infinity, bestClass = 255;
+      for (const t of ADE20K_TARGETS) {
+        const [tr, tg, tb] = t.color;
+        const dist = (r - tr) ** 2 + (g - tg) ** 2 + (b - tb) ** 2;
+        if (dist < bestDist) { bestDist = dist; bestClass = t.classId; }
+      }
+      if (bestDist < 1600) classMap[i] = bestClass;
+    }
+
+    // Extract binary masks
+    const masks = {};
+    for (const t of ADE20K_TARGETS) {
+      const mc = document.createElement('canvas');
+      mc.width = w; mc.height = h;
+      const mCtx = mc.getContext('2d');
+      const mData = mCtx.createImageData(w, h);
+      let count = 0;
+
+      for (let i = 0; i < w * h; i++) {
+        const isClass = classMap[i] === t.classId;
+        if (isClass) count++;
+        const off = i * 4;
+        const v = isClass ? 255 : 0;
+        mData.data[off] = v; mData.data[off + 1] = v;
+        mData.data[off + 2] = v; mData.data[off + 3] = 255;
+      }
+      mCtx.putImageData(mData, 0, 0);
+
+      const ratio = count / (w * h);
+      if (ratio > 0.005) {
+        masks[t.key] = { canvas: mc, ratio: (ratio * 100).toFixed(1) };
+        console.log(`[AutoSeg] ${t.label}: ${masks[t.key].ratio}%`);
+      }
+    }
+    return masks;
+  }
+
+  function showAutoSegPicker() {
+    // Remove old picker
+    const old = document.getElementById('autoSegPicker');
+    if (old) old.remove();
+
+    const picker = document.createElement('div');
+    picker.id = 'autoSegPicker';
+    picker.style.cssText = 'display:flex;gap:6px;align-items:center;flex-wrap:wrap;';
+
+    const found = Object.keys(autoSegMasks).length > 0;
+    if (!found) {
+      picker.innerHTML = '<span style="color:#f87171;font-size:12px">Беткей табылмады</span>';
+    } else {
+      for (const t of ADE20K_TARGETS) {
+        if (!autoSegMasks[t.key]) continue;
+        const btn = document.createElement('button');
+        btn.textContent = `${t.label} (${autoSegMasks[t.key].ratio}%)`;
+        btn.style.cssText = `background:${t.btnColor};color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;`;
+        btn.addEventListener('click', () => applyAutoSegMask(t.key));
+        picker.appendChild(btn);
+      }
+    }
+
+    // Insert after the button
+    els.autoSegBar.appendChild(picker);
+  }
+
+  function applyAutoSegMask(key) {
+    const maskInfo = autoSegMasks[key];
+    if (!maskInfo) return;
+
+    const mask = state.masks[state.activeMaskIndex];
+    if (!mask) return;
+
+    saveUndoState();
+
+    const mCtx = mask.canvas.getContext('2d');
+    const w = mask.canvas.width, h = mask.canvas.height;
+
+    // Scale segmentation mask to canvas size
+    const scaled = document.createElement('canvas');
+    scaled.width = w; scaled.height = h;
+    const sCtx = scaled.getContext('2d');
+    sCtx.drawImage(maskInfo.canvas, 0, 0, w, h);
+
+    // Threshold + apply to mask layer
+    const sData = sCtx.getImageData(0, 0, w, h);
+    const mData = mCtx.getImageData(0, 0, w, h);
+
+    for (let i = 0; i < sData.data.length; i += 4) {
+      if (sData.data[i] > 128) {
+        mData.data[i] = 255;
+        mData.data[i + 1] = 255;
+        mData.data[i + 2] = 255;
+        mData.data[i + 3] = 255;
+      }
+    }
+    mCtx.putImageData(mData, 0, 0);
+    renderMaskOverlay();
+    updateApplyButton();
+
+    const label = ADE20K_TARGETS.find(t => t.key === key)?.label || key;
+    els.autoSegStatus.textContent = `✅ ${label} → "${mask.name}"`;
+    console.log(`[AutoSeg] Applied ${label} to layer "${mask.name}"`);
+  }
+
   // ===== PUBLIC API =====
   return { init, open, close };
 })();
@@ -1271,3 +1514,5 @@ if (document.readyState === 'loading') {
 } else {
   UploadTool.init();
 }
+
+
