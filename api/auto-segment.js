@@ -6,11 +6,11 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { image } = req.body;
-  if (!image) return res.status(400).json({ error: 'image (base64 data URI) required' });
+  if (!image) return res.status(400).json({ error: 'image required' });
 
   try {
     const response = await fetch(
-      'https://api.replicate.com/v1/models/bfirsh/segformer-b0-finetuned-ade-512-512/predictions',
+      'https://api.replicate.com/v1/models/simbrams/segformer-b5-finetuned-ade-640-640/predictions',
       {
         method: 'POST',
         headers: {
