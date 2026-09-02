@@ -1360,11 +1360,12 @@ const UploadTool = (() => {
         for (const seg of segments) {
           const key = seg.label?.toLowerCase();
           if (SEG_LABELS[key] && seg.mask) {
+            const maskVal = seg.mask;
             autoSegMasks[key] = {
-              maskUrl: seg.mask,
+              maskUrl: maskVal,
               score: (typeof seg.score === 'number') ? (seg.score * 100).toFixed(0) : null
             };
-            console.log(`[AutoSeg] Found: ${key} (score: ${seg.score})`);
+            console.log(`[AutoSeg] Found: ${key} | mask type: ${typeof maskVal} | starts: ${String(maskVal).slice(0, 40)}`);
           }
         }
       }
@@ -1424,21 +1425,27 @@ const UploadTool = (() => {
     els.autoSegStatus.textContent = `⏳ ${meta.label} жүктелуде...`;
 
     try {
-      // Mask can be a data URI (base64) or an https URL
+      // Mask can be: data URI, raw base64, or https URL
       let imgSrc, blobUrl = null;
+      const m = info.maskUrl;
 
-      if (info.maskUrl.startsWith('data:')) {
-        // Base64 data URI — use directly, no proxy needed
-        imgSrc = info.maskUrl;
-        console.log('[AutoSeg] Mask is base64 data URI');
-      } else {
+      if (m.startsWith('data:')) {
+        // Already a data URI
+        imgSrc = m;
+        console.log('[AutoSeg] Mask: data URI');
+      } else if (m.startsWith('http://') || m.startsWith('https://')) {
         // Remote URL — fetch via CORS proxy
-        const proxyUrl = '/api/proxy-image?url=' + encodeURIComponent(info.maskUrl);
+        const proxyUrl = '/api/proxy-image?url=' + encodeURIComponent(m);
         const resp = await fetch(proxyUrl);
         if (!resp.ok) throw new Error('Proxy failed: ' + resp.status);
         const blob = await resp.blob();
         blobUrl = URL.createObjectURL(blob);
         imgSrc = blobUrl;
+        console.log('[AutoSeg] Mask: remote URL via proxy');
+      } else {
+        // Raw base64 string without prefix — add it
+        imgSrc = 'data:image/png;base64,' + m;
+        console.log('[AutoSeg] Mask: raw base64, prefix added');
       }
 
       const maskImg = await new Promise((res, rej) => {
