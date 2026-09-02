@@ -1300,8 +1300,8 @@ const UploadTool = (() => {
     els.autoSegStatus.textContent = 'Сегменттеуде...';
 
     try {
-      // 1) Resize image to max 1024 & get base64 data URI
-      const maxDim = 1024;
+      // 1) Resize image (model is native 640×640 — smaller = faster)
+      const maxDim = 768;
       const imgCanvas = document.createElement('canvas');
       let w = state.uploadedImage.width, h = state.uploadedImage.height;
       if (w > maxDim || h > maxDim) {
@@ -1326,23 +1326,33 @@ const UploadTool = (() => {
       if (!predId) throw new Error('No prediction ID');
       console.log('[AutoSeg] prediction:', predId);
 
-      // 3) Poll for result
+      // 3) Poll for result (max 5 min — b5 model cold start can be slow)
       let segments = null;
-      for (let i = 0; i < 60; i++) {
-        await new Promise(r => setTimeout(r, 2000));
+      const MAX_POLLS = 100; // 100 × 3s = 5 min
+      for (let i = 0; i < MAX_POLLS; i++) {
+        await new Promise(r => setTimeout(r, 3000));
         const pollRes = await fetch('/api/auto-segment-poll?id=' + predId);
         const data = await pollRes.json();
-        els.autoSegStatus.textContent = `⏳ ${i + 1}/60...`;
+
+        console.log(`[AutoSeg] Poll ${i + 1}: ${data.status}`);
+
+        // Show human-readable status
+        const statusText = data.status === 'starting' ? 'Модель іске қосылуда'
+          : data.status === 'processing' ? 'Өңделуде'
+          : data.status || '...';
+        const elapsed = Math.round((i + 1) * 3);
+        els.autoSegStatus.textContent = `⏳ ${statusText} (${elapsed}с)`;
 
         if (data.status === 'succeeded') {
           segments = data.output; // [{label, mask, score}, ...]
+          console.log('[AutoSeg] Raw output:', segments);
           break;
         }
         if (data.status === 'failed' || data.status === 'canceled') {
           throw new Error(data.error || 'Prediction ' + data.status);
         }
       }
-      if (!segments) throw new Error('Timeout — 2 минут өтті');
+      if (!segments) throw new Error('Timeout — 5 минут өтті. Модель баяу іске қосылуда, қайта көріңіз.');
 
       // 4) Filter wall/ceiling/floor from output
       autoSegMasks = {};
