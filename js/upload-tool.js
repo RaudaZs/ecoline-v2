@@ -1352,7 +1352,7 @@ const UploadTool = (() => {
           if (SEG_LABELS[key] && seg.mask) {
             autoSegMasks[key] = {
               maskUrl: seg.mask,
-              score: seg.score ? (seg.score * 100).toFixed(0) : '?'
+              score: (typeof seg.score === 'number') ? (seg.score * 100).toFixed(0) : null
             };
             console.log(`[AutoSeg] Found: ${key} (score: ${seg.score})`);
           }
@@ -1392,7 +1392,9 @@ const UploadTool = (() => {
         const meta = SEG_LABELS[key];
         if (!meta) continue;
         const btn = document.createElement('button');
-        btn.textContent = `${meta.label} (${info.score}%)`;
+        btn.textContent = info.score && info.score !== '?'
+          ? `${meta.label} (${info.score}%)`
+          : meta.label;
         btn.style.cssText = `background:${meta.btnColor};color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;`;
         btn.addEventListener('click', () => applyAutoSegMask(key));
         picker.appendChild(btn);
@@ -1412,17 +1414,28 @@ const UploadTool = (() => {
     els.autoSegStatus.textContent = `⏳ ${meta.label} жүктелуде...`;
 
     try {
-      // Load mask image via proxy
-      const proxyUrl = '/api/proxy-image?url=' + encodeURIComponent(info.maskUrl);
-      const resp = await fetch(proxyUrl);
-      const blob = await resp.blob();
-      const blobUrl = URL.createObjectURL(blob);
+      // Mask can be a data URI (base64) or an https URL
+      let imgSrc, blobUrl = null;
+
+      if (info.maskUrl.startsWith('data:')) {
+        // Base64 data URI — use directly, no proxy needed
+        imgSrc = info.maskUrl;
+        console.log('[AutoSeg] Mask is base64 data URI');
+      } else {
+        // Remote URL — fetch via CORS proxy
+        const proxyUrl = '/api/proxy-image?url=' + encodeURIComponent(info.maskUrl);
+        const resp = await fetch(proxyUrl);
+        if (!resp.ok) throw new Error('Proxy failed: ' + resp.status);
+        const blob = await resp.blob();
+        blobUrl = URL.createObjectURL(blob);
+        imgSrc = blobUrl;
+      }
 
       const maskImg = await new Promise((res, rej) => {
         const img = new Image();
         img.onload = () => res(img);
         img.onerror = () => rej(new Error('Mask load failed'));
-        img.src = blobUrl;
+        img.src = imgSrc;
       });
 
       saveUndoState();
@@ -1435,7 +1448,7 @@ const UploadTool = (() => {
       scaled.width = w; scaled.height = h;
       const sCtx = scaled.getContext('2d');
       sCtx.drawImage(maskImg, 0, 0, w, h);
-      URL.revokeObjectURL(blobUrl);
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
 
       // Threshold + apply (bright pixels = segmented area)
       const sData = sCtx.getImageData(0, 0, w, h);
