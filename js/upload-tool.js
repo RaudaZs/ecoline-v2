@@ -1418,9 +1418,6 @@ const UploadTool = (() => {
     const info = autoSegMasks[key];
     if (!info) return;
 
-    const mask = state.masks[state.activeMaskIndex];
-    if (!mask) return;
-
     const meta = SEG_LABELS[key];
     els.autoSegStatus.textContent = `⏳ ${meta.label} жүктелуде...`;
 
@@ -1430,11 +1427,9 @@ const UploadTool = (() => {
       const m = info.maskUrl;
 
       if (m.startsWith('data:')) {
-        // Already a data URI
         imgSrc = m;
         console.log('[AutoSeg] Mask: data URI');
       } else if (m.startsWith('http://') || m.startsWith('https://')) {
-        // Remote URL — fetch via CORS proxy
         const proxyUrl = '/api/proxy-image?url=' + encodeURIComponent(m);
         const resp = await fetch(proxyUrl);
         if (!resp.ok) throw new Error('Proxy failed: ' + resp.status);
@@ -1443,7 +1438,6 @@ const UploadTool = (() => {
         imgSrc = blobUrl;
         console.log('[AutoSeg] Mask: remote URL via proxy');
       } else {
-        // Raw base64 string without prefix — add it
         imgSrc = 'data:image/png;base64,' + m;
         console.log('[AutoSeg] Mask: raw base64, prefix added');
       }
@@ -1455,41 +1449,98 @@ const UploadTool = (() => {
         img.src = imgSrc;
       });
 
+      // === Find or create a dedicated layer for this surface ===
+      let targetIndex = state.masks.findIndex(mk => mk.name === meta.label);
+
+      if (targetIndex === -1) {
+        // No layer with this name yet
+        const emptyIndex = findEmptyLayerIndex();
+
+        if (emptyIndex !== -1) {
+          // Reuse an empty layer (e.g. the default "Қабырға 1")
+          state.masks[emptyIndex].name = meta.label;
+          state.masks[emptyIndex].color = meta.btnColor;
+          targetIndex = emptyIndex;
+          console.log(`[AutoSeg] Reused empty layer #${emptyIndex} → "${meta.label}"`);
+        } else {
+          // Create a new layer
+          if (state.masks.length >= 5) {
+            alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
+            els.autoSegStatus.textContent = '⚠ Қабат лимиті';
+            return;
+          }
+          state.masks.push({
+            name: meta.label,
+            canvas: createMaskCanvas(els.canvasBase.width, els.canvasBase.height),
+            color: meta.btnColor,
+          });
+          targetIndex = state.masks.length - 1;
+          console.log(`[AutoSeg] Created new layer "${meta.label}"`);
+        }
+      } else {
+        console.log(`[AutoSeg] Found existing layer "${meta.label}" at #${targetIndex}`);
+      }
+
+      // Switch to that layer
+      state.activeMaskIndex = targetIndex;
+      const mask = state.masks[targetIndex];
+
       saveUndoState();
 
       const mCtx = mask.canvas.getContext('2d');
       const w = mask.canvas.width, h = mask.canvas.height;
 
+      // Clear the layer first — replace, don't merge
+      mCtx.clearRect(0, 0, w, h);
+
       // Scale mask to canvas size
       const scaled = document.createElement('canvas');
       scaled.width = w; scaled.height = h;
-      const sCtx = scaled.getContext('2d');
+      const sCtx = scaled.getContext('2d', { willReadFrequently: true });
       sCtx.drawImage(maskImg, 0, 0, w, h);
       if (blobUrl) URL.revokeObjectURL(blobUrl);
 
-      // Threshold + apply (bright pixels = segmented area)
+      // Threshold + write (bright pixels = segmented area)
       const sData = sCtx.getImageData(0, 0, w, h);
-      const mData = mCtx.getImageData(0, 0, w, h);
+      const mData = mCtx.createImageData(w, h);
 
       for (let i = 0; i < sData.data.length; i += 4) {
-        if (sData.data[i] > 128 || sData.data[i + 1] > 128 || sData.data[i + 2] > 128) {
-          mData.data[i] = 255;
-          mData.data[i + 1] = 255;
-          mData.data[i + 2] = 255;
-          mData.data[i + 3] = 255;
-        }
+        const bright = sData.data[i] > 128 || sData.data[i + 1] > 128 || sData.data[i + 2] > 128;
+        const v = bright ? 255 : 0;
+        mData.data[i] = v;
+        mData.data[i + 1] = v;
+        mData.data[i + 2] = v;
+        mData.data[i + 3] = bright ? 255 : 0;
       }
       mCtx.putImageData(mData, 0, 0);
+
+      renderLayers();
       renderMaskOverlay();
       updateApplyButton();
 
-      els.autoSegStatus.textContent = `✅ ${meta.label} → "${mask.name}"`;
-      console.log(`[AutoSeg] Applied ${key} to layer "${mask.name}"`);
+      els.autoSegStatus.textContent = `✅ ${meta.label} қабаты дайын`;
+      console.log(`[AutoSeg] Applied ${key} → layer "${mask.name}" (#${targetIndex})`);
 
     } catch (err) {
       console.error('[AutoSeg] Mask apply error:', err);
       els.autoSegStatus.textContent = '❌ Маска қатесі';
     }
+  }
+
+  // Find a layer that has no painted pixels (so we can reuse it)
+  function findEmptyLayerIndex() {
+    for (let i = 0; i < state.masks.length; i++) {
+      const c = state.masks[i].canvas;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let hasPixels = false;
+      // Sample every 40th pixel — fast enough, accurate enough
+      for (let p = 3; p < d.length; p += 160) {
+        if (d[p] > 0) { hasPixels = true; break; }
+      }
+      if (!hasPixels) return i;
+    }
+    return -1;
   }
 
   // ===== PUBLIC API =====
