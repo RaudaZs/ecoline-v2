@@ -9,19 +9,17 @@ export default async function handler(req, res) {
   if (!image) return res.status(400).json({ error: 'image required' });
 
   try {
-    const response = await fetch(
-      'https://api.replicate.com/v1/models/simbrams/segformer-b5-finetuned-ade-640-640/predictions',
-      {
-        method: 'POST',
-        headers: {
-          'Authorization': `Token ${process.env.REPLICATE_API_TOKEN}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          input: { image: image }
-        })
-      }
-    );
+    const response = await fetch('https://api.replicate.com/v1/predictions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Token ${process.env.REPLICATE_API_TOKEN}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        version: 'd61f5e502a9c2029c27cd54e6fd64a07562c6fc7381afb71d964f134eee11ec8',
+        input: { image: image }
+      })
+    });
 
     const data = await response.json();
     if (!response.ok) {
