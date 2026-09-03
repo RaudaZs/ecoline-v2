@@ -1422,9 +1422,11 @@ const UploadTool = (() => {
     els.autoSegBar.appendChild(picker);
   }
 
-  /* Skirting height as a share of image height. 0.022 ≈ a 10 cm board
-     in a typical room photo. Tune from the console if it looks off. */
+  /* Skirting height as a share of image height, measured at the nearest
+     (lowest) point of the floor edge. Farther stretches get scaled down. */
   window.SKIRTING_RATIO = 0.022;
+  /* How thin the far end gets, relative to the near end. */
+  window.SKIRTING_FAR_SCALE = 0.45;
 
   async function applySkirting() {
     const floorInfo = autoSegMasks.floor;
@@ -1433,34 +1435,99 @@ const UploadTool = (() => {
     els.autoSegStatus.textContent = '⏳ Плинтус есептелуде...';
 
     try {
-      const floorImg = await loadMaskImage(floorInfo.maskUrl);
-
       const w = els.canvasBase.width, h = els.canvasBase.height;
 
-      // Draw the floor mask at canvas scale so coordinates line up
+      // --- Floor mask at canvas scale ---
+      const floorImg = await loadMaskImage(floorInfo.maskUrl);
       const fc = document.createElement('canvas');
       fc.width = w; fc.height = h;
       const fCtx = fc.getContext('2d', { willReadFrequently: true });
       fCtx.drawImage(floorImg, 0, 0, w, h);
       const fData = fCtx.getImageData(0, 0, w, h).data;
 
-      const band = Math.max(3, Math.round(h * window.SKIRTING_RATIO));
+      // --- Wall mask, if the model found one ---
+      let wData = null;
+      if (autoSegMasks.wall) {
+        const wallImg = await loadMaskImage(autoSegMasks.wall.maskUrl);
+        const wc = document.createElement('canvas');
+        wc.width = w; wc.height = h;
+        const wCtx = wc.getContext('2d', { willReadFrequently: true });
+        wCtx.drawImage(wallImg, 0, 0, w, h);
+        wData = wCtx.getImageData(0, 0, w, h).data;
+      }
 
-      // For each column, find the topmost floor pixel; the band sits above it
+      // --- 1. Topmost floor pixel per column ---
+      const tops = new Int32Array(w).fill(-1);
+      for (let x = 0; x < w; x++) {
+        // Require a run of floor pixels, so single-pixel noise is ignored
+        for (let y = 0; y < h - 3; y++) {
+          if (fData[(y * w + x) * 4] > 128 &&
+              fData[((y + 1) * w + x) * 4] > 128 &&
+              fData[((y + 2) * w + x) * 4] > 128) { tops[x] = y; break; }
+        }
+      }
+
+      // --- 2. Median smoothing — flattens the jagged mask edge ---
+      const R = Math.max(2, Math.round(w * 0.012));
+      const smooth = new Int32Array(w).fill(-1);
+      const buf = [];
+      for (let x = 0; x < w; x++) {
+        buf.length = 0;
+        for (let k = -R; k <= R; k++) {
+          const v = tops[x + k];
+          if (v !== undefined && v > 0) buf.push(v);
+        }
+        if (buf.length < 3) continue;
+        buf.sort((a, b) => a - b);
+        smooth[x] = buf[buf.length >> 1];
+      }
+
+      // --- 3. Perspective: near edge (low on screen) gets a taller band ---
+      let nearY = 0, farY = h;
+      for (let x = 0; x < w; x++) {
+        const v = smooth[x];
+        if (v <= 0) continue;
+        if (v > nearY) nearY = v;
+        if (v < farY) farY = v;
+      }
+      const bandNear = Math.max(3, Math.round(h * window.SKIRTING_RATIO));
+      const bandFar = Math.max(2, Math.round(bandNear * window.SKIRTING_FAR_SCALE));
+      const span = Math.max(1, nearY - farY);
+
+      // --- 4. Paint the band, keeping only pixels the wall also claims ---
       const out = new Uint8ClampedArray(w * h * 4);
-      let painted = 0;
+      let painted = 0, wallHits = 0, total = 0;
 
       for (let x = 0; x < w; x++) {
-        let topY = -1;
-        for (let y = 0; y < h; y++) {
-          if (fData[(y * w + x) * 4] > 128) { topY = y; break; }
-        }
+        const topY = smooth[x];
         if (topY <= 0) continue;
 
+        const t = (topY - farY) / span;              // 0 = far, 1 = near
+        const band = Math.round(bandFar + t * (bandNear - bandFar));
         const from = Math.max(0, topY - band);
+
         for (let y = from; y < topY; y++) {
-          const o = (y * w + x) * 4;
-          out[o] = 255; out[o + 1] = 255; out[o + 2] = 255; out[o + 3] = 255;
+          total++;
+          if (wData && wData[(y * w + x) * 4] > 128) wallHits++;
+        }
+      }
+
+      // Only trust the wall filter if it actually covers the strip;
+      // otherwise the wall mask stops short of the floor and would erase everything.
+      const useWall = wData && total > 0 && (wallHits / total) > 0.35;
+
+      for (let x = 0; x < w; x++) {
+        const topY = smooth[x];
+        if (topY <= 0) continue;
+
+        const t = (topY - farY) / span;
+        const band = Math.round(bandFar + t * (bandNear - bandFar));
+        const from = Math.max(0, topY - band);
+
+        for (let y = from; y < topY; y++) {
+          const p = (y * w + x) * 4;
+          if (useWall && wData[p] <= 128) continue;   // doorway, furniture, etc.
+          out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
           painted++;
         }
       }
@@ -1470,7 +1537,7 @@ const UploadTool = (() => {
         return;
       }
 
-      // Find or create the "Плинтус" layer
+      // --- 5. Find or create the layer ---
       let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
       if (idx === -1) {
         const empty = findEmptyLayerIndex();
@@ -1500,26 +1567,26 @@ const UploadTool = (() => {
       mCtx.clearRect(0, 0, w, h);
       mCtx.putImageData(new ImageData(out, w, h), 0, 0);
 
-      // Carve the band out of the wall layer so they don't overlap
+      // --- 6. Carve the strip out of the wall layer ---
       const wallIdx = state.masks.findIndex(mk => mk.name === 'Қабырға');
       if (wallIdx !== -1) {
-        const wCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
-        const wImg = wCtx.getImageData(0, 0, w, h);
+        const wlCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
+        const wlImg = wlCtx.getImageData(0, 0, w, h);
         for (let i = 3; i < out.length; i += 4) {
           if (out[i] > 0) {
-            wImg.data[i - 3] = 0; wImg.data[i - 2] = 0;
-            wImg.data[i - 1] = 0; wImg.data[i] = 0;
+            wlImg.data[i - 3] = 0; wlImg.data[i - 2] = 0;
+            wlImg.data[i - 1] = 0; wlImg.data[i] = 0;
           }
         }
-        wCtx.putImageData(wImg, 0, 0);
+        wlCtx.putImageData(wlImg, 0, 0);
       }
 
       renderLayers();
       renderMaskOverlay();
       updateApplyButton();
 
-      els.autoSegStatus.textContent = `✅ Плинтус қабаты дайын (${band}px)`;
-      console.log(`[AutoSeg] Skirting: band ${band}px, ${painted} px painted`);
+      els.autoSegStatus.textContent = `✅ Плинтус дайын (${bandFar}–${bandNear}px)`;
+      console.log(`[AutoSeg] Skirting: band ${bandFar}–${bandNear}px, wall filter: ${useWall ? 'on' : 'off'} (${Math.round(wallHits / Math.max(1, total) * 100)}% overlap), ${painted} px`);
 
     } catch (err) {
       console.error('[AutoSeg] Skirting error:', err);
