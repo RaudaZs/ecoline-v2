@@ -1422,11 +1422,12 @@ const UploadTool = (() => {
     els.autoSegBar.appendChild(picker);
   }
 
-  /* Skirting height as a share of image height, measured at the nearest
-     (lowest) point of the floor edge. Farther stretches get scaled down. */
+  /* Fallback band height when the colour edge can't be found. */
   window.SKIRTING_RATIO = 0.022;
-  /* How thin the far end gets, relative to the near end. */
   window.SKIRTING_FAR_SCALE = 0.45;
+  /* How different a pixel must be from the skirting colour to count as
+     the wall above it. Lower = more sensitive. */
+  window.SKIRTING_EDGE_THRESHOLD = 26;
 
   async function applySkirting() {
     const floorInfo = autoSegMasks.floor;
@@ -1445,21 +1446,13 @@ const UploadTool = (() => {
       fCtx.drawImage(floorImg, 0, 0, w, h);
       const fData = fCtx.getImageData(0, 0, w, h).data;
 
-      // --- Wall mask, if the model found one ---
-      let wData = null;
-      if (autoSegMasks.wall) {
-        const wallImg = await loadMaskImage(autoSegMasks.wall.maskUrl);
-        const wc = document.createElement('canvas');
-        wc.width = w; wc.height = h;
-        const wCtx = wc.getContext('2d', { willReadFrequently: true });
-        wCtx.drawImage(wallImg, 0, 0, w, h);
-        wData = wCtx.getImageData(0, 0, w, h).data;
-      }
+      // --- The photo itself, for colour analysis ---
+      const photo = els.canvasBase.getContext('2d', { willReadFrequently: true })
+        .getImageData(0, 0, w, h).data;
 
       // --- 1. Topmost floor pixel per column ---
       const tops = new Int32Array(w).fill(-1);
       for (let x = 0; x < w; x++) {
-        // Require a run of floor pixels, so single-pixel noise is ignored
         for (let y = 0; y < h - 3; y++) {
           if (fData[(y * w + x) * 4] > 128 &&
               fData[((y + 1) * w + x) * 4] > 128 &&
@@ -1467,7 +1460,7 @@ const UploadTool = (() => {
         }
       }
 
-      // --- 2. Median smoothing — flattens the jagged mask edge ---
+      // --- 2. Median smoothing of the floor edge ---
       const R = Math.max(2, Math.round(w * 0.012));
       const smooth = new Int32Array(w).fill(-1);
       const buf = [];
@@ -1482,51 +1475,75 @@ const UploadTool = (() => {
         smooth[x] = buf[buf.length >> 1];
       }
 
-      // --- 3. Perspective: near edge (low on screen) gets a taller band ---
-      let nearY = 0, farY = h;
+      // --- 3. Fill gaps (plant pots, furniture) by interpolating neighbours ---
+      const edge = Int32Array.from(smooth);
+      let prev = -1;
       for (let x = 0; x < w; x++) {
-        const v = smooth[x];
-        if (v <= 0) continue;
-        if (v > nearY) nearY = v;
-        if (v < farY) farY = v;
+        if (edge[x] > 0) { prev = x; continue; }
+        let next = -1;
+        for (let k = x + 1; k < w; k++) if (edge[k] > 0) { next = k; break; }
+        if (prev !== -1 && next !== -1) {
+          const t = (x - prev) / (next - prev);
+          edge[x] = Math.round(edge[prev] + t * (edge[next] - edge[prev]));
+        } else if (prev !== -1) edge[x] = edge[prev];
+        else if (next !== -1) edge[x] = edge[next];
       }
-      const bandNear = Math.max(3, Math.round(h * window.SKIRTING_RATIO));
-      const bandFar = Math.max(2, Math.round(bandNear * window.SKIRTING_FAR_SCALE));
-      const span = Math.max(1, nearY - farY);
 
-      // --- 4. Paint the band, keeping only pixels the wall also claims ---
-      const out = new Uint8ClampedArray(w * h * 4);
-      let painted = 0, wallHits = 0, total = 0;
+      // --- 4. Walk up from the floor edge until the colour changes ---
+      const maxBand = Math.round(h * window.SKIRTING_RATIO * 2.5);
+      const minBand = Math.max(2, Math.round(h * window.SKIRTING_RATIO * 0.4));
+      const TH = window.SKIRTING_EDGE_THRESHOLD;
+      const heights = new Int32Array(w).fill(0);
+      let edgeFound = 0;
 
       for (let x = 0; x < w; x++) {
-        const topY = smooth[x];
-        if (topY <= 0) continue;
+        const topY = edge[x];
+        if (topY <= 2) continue;
 
-        const t = (topY - farY) / span;              // 0 = far, 1 = near
-        const band = Math.round(bandFar + t * (bandNear - bandFar));
-        const from = Math.max(0, topY - band);
+        // Sample the skirting colour just above the floor line
+        const sy = Math.max(0, topY - 2);
+        const sp = (sy * w + x) * 4;
+        const sR = photo[sp], sG = photo[sp + 1], sB = photo[sp + 2];
 
-        for (let y = from; y < topY; y++) {
-          total++;
-          if (wData && wData[(y * w + x) * 4] > 128) wallHits++;
+        let found = 0;
+        for (let d = 3; d < maxBand; d++) {
+          const y = topY - d;
+          if (y < 0) break;
+          const p = (y * w + x) * 4;
+          const dist = Math.abs(photo[p] - sR) + Math.abs(photo[p + 1] - sG) + Math.abs(photo[p + 2] - sB);
+          if (dist > TH * 3) { found = d; break; }
+        }
+        if (found) { heights[x] = found; edgeFound++; }
+      }
+
+      // --- 5. Smooth the detected heights; fall back where nothing was found ---
+      const perspBase = Math.max(3, Math.round(h * window.SKIRTING_RATIO));
+      const hSm = new Int32Array(w);
+      for (let x = 0; x < w; x++) {
+        buf.length = 0;
+        for (let k = -R; k <= R; k++) {
+          const v = heights[x + k];
+          if (v !== undefined && v > 0) buf.push(v);
+        }
+        if (buf.length >= 3) {
+          buf.sort((a, b) => a - b);
+          hSm[x] = Math.min(maxBand, Math.max(minBand, buf[buf.length >> 1]));
+        } else {
+          hSm[x] = perspBase;
         }
       }
 
-      // Only trust the wall filter if it actually covers the strip;
-      // otherwise the wall mask stops short of the floor and would erase everything.
-      const useWall = wData && total > 0 && (wallHits / total) > 0.35;
+      // --- 6. Paint ---
+      const out = new Uint8ClampedArray(w * h * 4);
+      let painted = 0;
 
       for (let x = 0; x < w; x++) {
-        const topY = smooth[x];
+        const topY = edge[x];
         if (topY <= 0) continue;
-
-        const t = (topY - farY) / span;
-        const band = Math.round(bandFar + t * (bandNear - bandFar));
+        const band = hSm[x];
         const from = Math.max(0, topY - band);
-
         for (let y = from; y < topY; y++) {
           const p = (y * w + x) * 4;
-          if (useWall && wData[p] <= 128) continue;   // doorway, furniture, etc.
           out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
           painted++;
         }
@@ -1537,7 +1554,7 @@ const UploadTool = (() => {
         return;
       }
 
-      // --- 5. Find or create the layer ---
+      // --- 7. Find or create the layer ---
       let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
       if (idx === -1) {
         const empty = findEmptyLayerIndex();
@@ -1567,7 +1584,7 @@ const UploadTool = (() => {
       mCtx.clearRect(0, 0, w, h);
       mCtx.putImageData(new ImageData(out, w, h), 0, 0);
 
-      // --- 6. Carve the strip out of the wall layer ---
+      // --- 8. Carve the strip out of the wall layer ---
       const wallIdx = state.masks.findIndex(mk => mk.name === 'Қабырға');
       if (wallIdx !== -1) {
         const wlCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
@@ -1585,8 +1602,9 @@ const UploadTool = (() => {
       renderMaskOverlay();
       updateApplyButton();
 
-      els.autoSegStatus.textContent = `✅ Плинтус дайын (${bandFar}–${bandNear}px)`;
-      console.log(`[AutoSeg] Skirting: band ${bandFar}–${bandNear}px, wall filter: ${useWall ? 'on' : 'off'} (${Math.round(wallHits / Math.max(1, total) * 100)}% overlap), ${painted} px`);
+      const pct = Math.round(edgeFound / w * 100);
+      els.autoSegStatus.textContent = `✅ Плинтус дайын (${pct}% түс шекарасы)`;
+      console.log(`[AutoSeg] Skirting: colour edge found in ${pct}% of columns, band ${minBand}–${maxBand}px, ${painted} px`);
 
     } catch (err) {
       console.error('[AutoSeg] Skirting error:', err);
