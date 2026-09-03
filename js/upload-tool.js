@@ -1422,12 +1422,11 @@ const UploadTool = (() => {
     els.autoSegBar.appendChild(picker);
   }
 
-  /* Fallback band height when the colour edge can't be found. */
   window.SKIRTING_RATIO = 0.022;
-  window.SKIRTING_FAR_SCALE = 0.45;
-  /* How different a pixel must be from the skirting colour to count as
-     the wall above it. Lower = more sensitive. */
   window.SKIRTING_EDGE_THRESHOLD = 26;
+
+  // Cached floor edge so the slider can redraw without re-reading the mask
+  let skirtEdge = null, skirtAuto = null, skirtW = 0, skirtH = 0;
 
   async function applySkirting() {
     const floorInfo = autoSegMasks.floor;
@@ -1437,8 +1436,8 @@ const UploadTool = (() => {
 
     try {
       const w = els.canvasBase.width, h = els.canvasBase.height;
+      skirtW = w; skirtH = h;
 
-      // --- Floor mask at canvas scale ---
       const floorImg = await loadMaskImage(floorInfo.maskUrl);
       const fc = document.createElement('canvas');
       fc.width = w; fc.height = h;
@@ -1446,11 +1445,10 @@ const UploadTool = (() => {
       fCtx.drawImage(floorImg, 0, 0, w, h);
       const fData = fCtx.getImageData(0, 0, w, h).data;
 
-      // --- The photo itself, for colour analysis ---
       const photo = els.canvasBase.getContext('2d', { willReadFrequently: true })
         .getImageData(0, 0, w, h).data;
 
-      // --- 1. Topmost floor pixel per column ---
+      // --- Topmost floor pixel per column ---
       const tops = new Int32Array(w).fill(-1);
       for (let x = 0; x < w; x++) {
         for (let y = 0; y < h - 3; y++) {
@@ -1460,7 +1458,7 @@ const UploadTool = (() => {
         }
       }
 
-      // --- 2. Median smoothing of the floor edge ---
+      // --- Median smoothing ---
       const R = Math.max(2, Math.round(w * 0.012));
       const smooth = new Int32Array(w).fill(-1);
       const buf = [];
@@ -1475,7 +1473,7 @@ const UploadTool = (() => {
         smooth[x] = buf[buf.length >> 1];
       }
 
-      // --- 3. Fill gaps (plant pots, furniture) by interpolating neighbours ---
+      // --- Fill gaps by interpolation ---
       const edge = Int32Array.from(smooth);
       let prev = -1;
       for (let x = 0; x < w; x++) {
@@ -1488,128 +1486,135 @@ const UploadTool = (() => {
         } else if (prev !== -1) edge[x] = edge[prev];
         else if (next !== -1) edge[x] = edge[next];
       }
+      skirtEdge = edge;
 
-      // --- 4. Walk up from the floor edge until the colour changes ---
-      const maxBand = Math.round(h * window.SKIRTING_RATIO * 2.5);
-      const minBand = Math.max(2, Math.round(h * window.SKIRTING_RATIO * 0.4));
+      // --- Colour-based height, capped tighter than before ---
+      const maxBand = Math.round(h * 0.035);
+      const minBand = Math.max(2, Math.round(h * 0.006));
       const TH = window.SKIRTING_EDGE_THRESHOLD;
       const heights = new Int32Array(w).fill(0);
-      let edgeFound = 0;
+      let found = 0;
 
       for (let x = 0; x < w; x++) {
         const topY = edge[x];
         if (topY <= 2) continue;
-
-        // Sample the skirting colour just above the floor line
         const sy = Math.max(0, topY - 2);
         const sp = (sy * w + x) * 4;
         const sR = photo[sp], sG = photo[sp + 1], sB = photo[sp + 2];
-
-        let found = 0;
         for (let d = 3; d < maxBand; d++) {
           const y = topY - d;
           if (y < 0) break;
           const p = (y * w + x) * 4;
-          const dist = Math.abs(photo[p] - sR) + Math.abs(photo[p + 1] - sG) + Math.abs(photo[p + 2] - sB);
-          if (dist > TH * 3) { found = d; break; }
-        }
-        if (found) { heights[x] = found; edgeFound++; }
-      }
-
-      // --- 5. Smooth the detected heights; fall back where nothing was found ---
-      const perspBase = Math.max(3, Math.round(h * window.SKIRTING_RATIO));
-      const hSm = new Int32Array(w);
-      for (let x = 0; x < w; x++) {
-        buf.length = 0;
-        for (let k = -R; k <= R; k++) {
-          const v = heights[x + k];
-          if (v !== undefined && v > 0) buf.push(v);
-        }
-        if (buf.length >= 3) {
-          buf.sort((a, b) => a - b);
-          hSm[x] = Math.min(maxBand, Math.max(minBand, buf[buf.length >> 1]));
-        } else {
-          hSm[x] = perspBase;
-        }
-      }
-
-      // --- 6. Paint ---
-      const out = new Uint8ClampedArray(w * h * 4);
-      let painted = 0;
-
-      for (let x = 0; x < w; x++) {
-        const topY = edge[x];
-        if (topY <= 0) continue;
-        const band = hSm[x];
-        const from = Math.max(0, topY - band);
-        for (let y = from; y < topY; y++) {
-          const p = (y * w + x) * 4;
-          out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
-          painted++;
-        }
-      }
-
-      if (painted < 100) {
-        els.autoSegStatus.textContent = '⚠ Плинтус аймағы табылмады';
-        return;
-      }
-
-      // --- 7. Find or create the layer ---
-      let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
-      if (idx === -1) {
-        const empty = findEmptyLayerIndex();
-        if (empty !== -1) {
-          state.masks[empty].name = 'Плинтус';
-          state.masks[empty].color = '#ec4899';
-          idx = empty;
-        } else {
-          if (state.masks.length >= 5) {
-            alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
-            els.autoSegStatus.textContent = '⚠ Қабат лимиті';
-            return;
-          }
-          state.masks.push({
-            name: 'Плинтус',
-            canvas: createMaskCanvas(w, h),
-            color: '#ec4899',
-          });
-          idx = state.masks.length - 1;
-        }
-      }
-
-      state.activeMaskIndex = idx;
-      saveUndoState();
-
-      const mCtx = state.masks[idx].canvas.getContext('2d');
-      mCtx.clearRect(0, 0, w, h);
-      mCtx.putImageData(new ImageData(out, w, h), 0, 0);
-
-      // --- 8. Carve the strip out of the wall layer ---
-      const wallIdx = state.masks.findIndex(mk => mk.name === 'Қабырға');
-      if (wallIdx !== -1) {
-        const wlCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
-        const wlImg = wlCtx.getImageData(0, 0, w, h);
-        for (let i = 3; i < out.length; i += 4) {
-          if (out[i] > 0) {
-            wlImg.data[i - 3] = 0; wlImg.data[i - 2] = 0;
-            wlImg.data[i - 1] = 0; wlImg.data[i] = 0;
+          if (Math.abs(photo[p] - sR) + Math.abs(photo[p + 1] - sG) + Math.abs(photo[p + 2] - sB) > TH * 3) {
+            heights[x] = d; found++; break;
           }
         }
-        wlCtx.putImageData(wlImg, 0, 0);
       }
 
-      renderLayers();
-      renderMaskOverlay();
-      updateApplyButton();
+      // Median of detected heights → one representative band
+      const hs = Array.from(heights).filter(v => v > 0).sort((a, b) => a - b);
+      const autoBand = hs.length > w * 0.2
+        ? Math.min(maxBand, Math.max(minBand, hs[hs.length >> 1]))
+        : Math.round(h * window.SKIRTING_RATIO);
+      skirtAuto = autoBand;
 
-      const pct = Math.round(edgeFound / w * 100);
-      els.autoSegStatus.textContent = `✅ Плинтус дайын (${pct}% түс шекарасы)`;
-      console.log(`[AutoSeg] Skirting: colour edge found in ${pct}% of columns, band ${minBand}–${maxBand}px, ${painted} px`);
+      drawSkirting(autoBand, 0);
+      showSkirtingSlider(autoBand, minBand, maxBand);
+
+      console.log(`[AutoSeg] Skirting: colour edge in ${Math.round(found / w * 100)}% of columns, auto band ${autoBand}px (range ${minBand}–${maxBand})`);
 
     } catch (err) {
       console.error('[AutoSeg] Skirting error:', err);
       els.autoSegStatus.textContent = '❌ Плинтус қатесі';
     }
+  }
+
+  /* Paint the band. `band` = thickness in px, `shift` = move the strip
+     up (negative) or down (positive) relative to the floor edge. */
+  function drawSkirting(band, shift) {
+    if (!skirtEdge) return;
+    const w = skirtW, h = skirtH;
+    const out = new Uint8ClampedArray(w * h * 4);
+    let painted = 0;
+
+    for (let x = 0; x < w; x++) {
+      const topY = skirtEdge[x] + shift;
+      if (topY <= 0 || topY >= h) continue;
+      const from = Math.max(0, topY - band);
+      for (let y = from; y < topY; y++) {
+        const p = (y * w + x) * 4;
+        out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
+        painted++;
+      }
+    }
+    if (painted < 50) return;
+
+    let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
+    if (idx === -1) {
+      const empty = findEmptyLayerIndex();
+      if (empty !== -1) {
+        state.masks[empty].name = 'Плинтус';
+        state.masks[empty].color = '#ec4899';
+        idx = empty;
+      } else {
+        if (state.masks.length >= 5) {
+          alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
+          return;
+        }
+        state.masks.push({
+          name: 'Плинтус',
+          canvas: createMaskCanvas(w, h),
+          color: '#ec4899',
+        });
+        idx = state.masks.length - 1;
+      }
+      saveUndoState();
+    }
+
+    state.activeMaskIndex = idx;
+    const mCtx = state.masks[idx].canvas.getContext('2d');
+    mCtx.clearRect(0, 0, w, h);
+    mCtx.putImageData(new ImageData(out, w, h), 0, 0);
+
+    renderLayers();
+    renderMaskOverlay();
+    updateApplyButton();
+  }
+
+  function showSkirtingSlider(band, minB, maxB) {
+    const old = document.getElementById('skirtCtl');
+    if (old) old.remove();
+
+    const box = document.createElement('div');
+    box.id = 'skirtCtl';
+    box.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%;margin-top:8px;padding:8px 10px;background:rgba(236,72,153,0.08);border-radius:8px;';
+
+    const mk = (label, min, max, val, onInput) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      const lb = document.createElement('span');
+      lb.textContent = label;
+      lb.style.cssText = 'color:#f9a8d4;font-size:11px;min-width:62px;';
+      const sl = document.createElement('input');
+      sl.type = 'range'; sl.min = min; sl.max = max; sl.value = val;
+      sl.style.cssText = 'flex:1;accent-color:#ec4899;';
+      const num = document.createElement('span');
+      num.textContent = val + 'px';
+      num.style.cssText = 'color:#fbcfe8;font-size:11px;min-width:38px;text-align:right;';
+      sl.addEventListener('input', () => {
+        num.textContent = sl.value + 'px';
+        onInput(parseInt(sl.value, 10));
+      });
+      row.append(lb, sl, num);
+      return row;
+    };
+
+    let curBand = band, curShift = 0;
+    box.appendChild(mk('Қалыңдық', minB, maxB, band, v => { curBand = v; drawSkirting(curBand, curShift); }));
+    box.appendChild(mk('Жылжыту', -30, 30, 0, v => { curShift = v; drawSkirting(curBand, curShift); }));
+
+    els.autoSegBar.appendChild(box);
+    els.autoSegStatus.textContent = '✅ Плинтус — слайдермен реттеңіз';
   }
 
   // Shared mask loader — handles data URI, raw base64 and remote URLs
