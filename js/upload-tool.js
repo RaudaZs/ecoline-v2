@@ -1283,11 +1283,22 @@ const UploadTool = (() => {
   // ===== AUTO-SEGMENTATION (SegFormer ADE20K) =====
   // Output: [{label: "wall", mask: "https://...", score: 0.95}, ...]
   const SEG_LABELS = {
+    // Interior
     wall:    { label: 'Қабырға', btnColor: '#6366f1' },
     ceiling: { label: 'Төбе',    btnColor: '#f59e0b' },
-    floor:   { label: 'Еден',    btnColor: '#10b981' }
+    floor:   { label: 'Еден',    btnColor: '#10b981' },
+    // Exterior — ADE20K has no separate roof or socle class,
+    // so the model returns the house as one piece. Refine with SAM.
+    building: { label: 'Үй',      btnColor: '#0ea5e9' },
+    house:    { label: 'Ғимарат', btnColor: '#14b8a6' },
+    skyscraper: { label: 'Ғимарат', btnColor: '#14b8a6' },
+    hovel:    { label: 'Құрылыс', btnColor: '#84cc16' },
+    fence:    { label: 'Қоршау',  btnColor: '#a855f7' },
+    door:     { label: 'Есік',    btnColor: '#f43f5e' },
+    windowpane: { label: 'Терезе', btnColor: '#06b6d4' },
+    stairs:   { label: 'Баспалдақ', btnColor: '#eab308' },
   };
-  let autoSegMasks = {}; // { wall: {maskUrl, score}, ceiling: {...}, floor: {...} }
+  let autoSegMasks = {};
 
   async function runAutoSegment() {
     if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
@@ -1375,7 +1386,15 @@ const UploadTool = (() => {
       // 5) Show picker UI
       showAutoSegPicker();
 
-      els.autoSegStatus.textContent = '✅ Дайын!';
+      // Exterior shots need SAM for roof and socle — the model can't split them
+      const isFacade = ['building', 'house', 'skyscraper', 'hovel']
+        .some(k => autoSegMasks[k]);
+
+      if (isFacade) {
+        els.autoSegStatus.textContent = 'ℹ️ Шатыр мен цоколь үшін SAM нүктелерін қолданыңыз';
+      } else {
+        els.autoSegStatus.textContent = '✅ Дайын!';
+      }
       els.btnAutoSegment.textContent = '🔮 Қайта сегмент';
 
     } catch (err) {
