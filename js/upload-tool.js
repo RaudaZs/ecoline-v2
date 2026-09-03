@@ -1410,8 +1410,141 @@ const UploadTool = (() => {
         btn.addEventListener('click', () => applyAutoSegMask(key));
         picker.appendChild(btn);
       }
+      // Skirting board — derived from the floor edge, not from the model
+      if (autoSegMasks.floor) {
+        const sk = document.createElement('button');
+        sk.textContent = 'Плинтус';
+        sk.style.cssText = 'background:#ec4899;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;';
+        sk.addEventListener('click', () => applySkirting());
+        picker.appendChild(sk);
+      }
     }
     els.autoSegBar.appendChild(picker);
+  }
+
+  /* Skirting height as a share of image height. 0.022 ≈ a 10 cm board
+     in a typical room photo. Tune from the console if it looks off. */
+  window.SKIRTING_RATIO = 0.022;
+
+  async function applySkirting() {
+    const floorInfo = autoSegMasks.floor;
+    if (!floorInfo) return;
+
+    els.autoSegStatus.textContent = '⏳ Плинтус есептелуде...';
+
+    try {
+      const floorImg = await loadMaskImage(floorInfo.maskUrl);
+
+      const w = els.canvasBase.width, h = els.canvasBase.height;
+
+      // Draw the floor mask at canvas scale so coordinates line up
+      const fc = document.createElement('canvas');
+      fc.width = w; fc.height = h;
+      const fCtx = fc.getContext('2d', { willReadFrequently: true });
+      fCtx.drawImage(floorImg, 0, 0, w, h);
+      const fData = fCtx.getImageData(0, 0, w, h).data;
+
+      const band = Math.max(3, Math.round(h * window.SKIRTING_RATIO));
+
+      // For each column, find the topmost floor pixel; the band sits above it
+      const out = new Uint8ClampedArray(w * h * 4);
+      let painted = 0;
+
+      for (let x = 0; x < w; x++) {
+        let topY = -1;
+        for (let y = 0; y < h; y++) {
+          if (fData[(y * w + x) * 4] > 128) { topY = y; break; }
+        }
+        if (topY <= 0) continue;
+
+        const from = Math.max(0, topY - band);
+        for (let y = from; y < topY; y++) {
+          const o = (y * w + x) * 4;
+          out[o] = 255; out[o + 1] = 255; out[o + 2] = 255; out[o + 3] = 255;
+          painted++;
+        }
+      }
+
+      if (painted < 100) {
+        els.autoSegStatus.textContent = '⚠ Плинтус аймағы табылмады';
+        return;
+      }
+
+      // Find or create the "Плинтус" layer
+      let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
+      if (idx === -1) {
+        const empty = findEmptyLayerIndex();
+        if (empty !== -1) {
+          state.masks[empty].name = 'Плинтус';
+          state.masks[empty].color = '#ec4899';
+          idx = empty;
+        } else {
+          if (state.masks.length >= 5) {
+            alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
+            els.autoSegStatus.textContent = '⚠ Қабат лимиті';
+            return;
+          }
+          state.masks.push({
+            name: 'Плинтус',
+            canvas: createMaskCanvas(w, h),
+            color: '#ec4899',
+          });
+          idx = state.masks.length - 1;
+        }
+      }
+
+      state.activeMaskIndex = idx;
+      saveUndoState();
+
+      const mCtx = state.masks[idx].canvas.getContext('2d');
+      mCtx.clearRect(0, 0, w, h);
+      mCtx.putImageData(new ImageData(out, w, h), 0, 0);
+
+      // Carve the band out of the wall layer so they don't overlap
+      const wallIdx = state.masks.findIndex(mk => mk.name === 'Қабырға');
+      if (wallIdx !== -1) {
+        const wCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
+        const wImg = wCtx.getImageData(0, 0, w, h);
+        for (let i = 3; i < out.length; i += 4) {
+          if (out[i] > 0) {
+            wImg.data[i - 3] = 0; wImg.data[i - 2] = 0;
+            wImg.data[i - 1] = 0; wImg.data[i] = 0;
+          }
+        }
+        wCtx.putImageData(wImg, 0, 0);
+      }
+
+      renderLayers();
+      renderMaskOverlay();
+      updateApplyButton();
+
+      els.autoSegStatus.textContent = `✅ Плинтус қабаты дайын (${band}px)`;
+      console.log(`[AutoSeg] Skirting: band ${band}px, ${painted} px painted`);
+
+    } catch (err) {
+      console.error('[AutoSeg] Skirting error:', err);
+      els.autoSegStatus.textContent = '❌ Плинтус қатесі';
+    }
+  }
+
+  // Shared mask loader — handles data URI, raw base64 and remote URLs
+  async function loadMaskImage(m) {
+    let src;
+    if (m.startsWith('data:')) {
+      src = m;
+    } else if (m.startsWith('http://') || m.startsWith('https://')) {
+      const resp = await fetch('/api/proxy-image?url=' + encodeURIComponent(m));
+      if (!resp.ok) throw new Error('Proxy failed: ' + resp.status);
+      src = URL.createObjectURL(await resp.blob());
+    } else {
+      src = 'data:image/png;base64,' + m;
+    }
+    return new Promise((res, rej) => {
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => rej(new Error('Mask load failed'));
+      img.src = src;
+    });
   }
 
   async function applyAutoSegMask(key) {
