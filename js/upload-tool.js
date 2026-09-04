@@ -188,7 +188,7 @@ const UploadTool = (() => {
           <!-- Text-prompt segmentation -->
           <div class="text-seg-bar hidden" id="text-seg-bar" style="display:none;flex-direction:column;gap:8px;padding:8px 12px;background:rgba(14,165,233,0.1);border-radius:10px;margin-bottom:8px">
             <div style="display:flex;gap:6px;align-items:center">
-              <input id="text-seg-input" type="text" placeholder="roof, basement, window..." style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);border-radius:7px;padding:7px 10px;color:#fff;font-size:13px;outline:none">
+              <input id="text-seg-input" type="text" placeholder="roof -sky, window -wall..." style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);border-radius:7px;padding:7px 10px;color:#fff;font-size:13px;outline:none">
               <button id="btn-text-segment" style="background:#0ea5e9;padding:7px 14px;font-size:13px;border-radius:7px;border:none;color:#fff;font-weight:600;cursor:pointer;white-space:nowrap">🔍 Табу</button>
             </div>
             <div id="text-seg-chips" style="display:flex;gap:5px;flex-wrap:wrap"></div>
@@ -403,16 +403,18 @@ const UploadTool = (() => {
     // Auto-segment
     els.btnAutoSegment.addEventListener('click', runAutoSegment);
 
-    // Text-prompt segment
-    els.btnTextSegment.addEventListener('click', () => {
-      const v = els.textSegInput.value.trim();
-      if (v) runTextSegment(v, v);
-    });
+    // Text-prompt segment. "roof -sky" → prompt "roof", negative "sky"
+    const runFromInput = () => {
+      const raw = els.textSegInput.value.trim();
+      if (!raw) return;
+      const parts = raw.split('-');
+      const pos = parts[0].trim();
+      const neg = parts.slice(1).join(',').trim();
+      if (pos) runTextSegment(pos, pos, neg, null);
+    };
+    els.btnTextSegment.addEventListener('click', runFromInput);
     els.textSegInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        const v = els.textSegInput.value.trim();
-        if (v) runTextSegment(v, v);
-      }
+      if (e.key === 'Enter') runFromInput();
     });
 
     // Actions
@@ -1621,12 +1623,12 @@ const UploadTool = (() => {
      into a pixel mask. Works on anything the model can name, so it covers
      roofs, socles and other things ADE20K has no class for. */
   const TEXT_SEG_CHIPS = [
-    { prompt: 'roof',            label: 'Шатыр',   color: '#f97316' },
-    { prompt: 'basement, socle', label: 'Цоколь',  color: '#78716c' },
-    { prompt: 'facade wall',     label: 'Фасад',   color: '#0ea5e9' },
-    { prompt: 'window',          label: 'Терезе',  color: '#06b6d4' },
-    { prompt: 'door',            label: 'Есік',    color: '#f43f5e' },
-    { prompt: 'skirting board',  label: 'Плинтус', color: '#ec4899' },
+    { prompt: 'roof',                        neg: 'sky, wall, tree',      label: 'Шатыр',   color: '#f97316', max: 0.55 },
+    { prompt: 'basement, socle, foundation', neg: 'wall, window, ground', label: 'Цоколь',  color: '#78716c', max: 0.35 },
+    { prompt: 'facade wall',                 neg: 'sky, roof, window',    label: 'Фасад',   color: '#0ea5e9', max: 0.85 },
+    { prompt: 'window',                      neg: 'wall',                 label: 'Терезе',  color: '#06b6d4', max: 0.40 },
+    { prompt: 'door',                        neg: 'wall',                 label: 'Есік',    color: '#f43f5e', max: 0.40 },
+    { prompt: 'skirting board, baseboard',   neg: 'wall, floor',          label: 'Плинтус', color: '#ec4899', max: 0.12 },
   ];
 
   function renderTextSegChips() {
@@ -1635,12 +1637,12 @@ const UploadTool = (() => {
       const b = document.createElement('button');
       b.textContent = c.label;
       b.style.cssText = `background:${c.color}22;border:1px solid ${c.color}66;color:${c.color};padding:4px 10px;border-radius:12px;cursor:pointer;font-size:11px;font-weight:500;`;
-      b.addEventListener('click', () => runTextSegment(c.prompt, c.label));
+      b.addEventListener('click', () => runTextSegment(c.prompt, c.label, c.neg, c.max));
       els.textSegChips.appendChild(b);
     });
   }
 
-  async function runTextSegment(prompt, label) {
+  async function runTextSegment(prompt, label, negPrompt, maxShare) {
     if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
 
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -1650,7 +1652,6 @@ const UploadTool = (() => {
     els.textSegStatus.textContent = `⏳ "${prompt}" ізделуде...`;
 
     try {
-      // Resize to keep the upload small
       const maxDim = 1024;
       const ic = document.createElement('canvas');
       let w = state.uploadedImage.width, h = state.uploadedImage.height;
@@ -1665,15 +1666,14 @@ const UploadTool = (() => {
       const createRes = await fetch('/api/text-segment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64, prompt })
+        body: JSON.stringify({ image: base64, prompt, negative_prompt: negPrompt || '' })
       });
       const createData = await createRes.json();
       if (!createRes.ok) throw new Error(createData.error || 'API error');
       const predId = createData.id;
       if (!predId) throw new Error('No prediction ID');
-      console.log('[TextSeg] prediction:', predId, '| prompt:', prompt);
+      console.log('[TextSeg] prediction:', predId, '| prompt:', prompt, '| negative:', negPrompt || '—');
 
-      // Poll — reuse the auto-segment poller, it only needs an id
       let output = null;
       for (let i = 0; i < 40; i++) {
         await new Promise(r => setTimeout(r, 2000));
@@ -1690,11 +1690,10 @@ const UploadTool = (() => {
 
       console.log('[TextSeg] output:', output);
 
-      // The model returns several images; the first is the mask
       const maskUrl = Array.isArray(output) ? output[0] : output;
       if (!maskUrl) throw new Error('Маска қайтарылмады');
 
-      await applyTextMask(maskUrl, label);
+      await applyTextMask(maskUrl, label, maxShare);
 
     } catch (err) {
       console.error('[TextSeg] Error:', err);
@@ -1704,11 +1703,13 @@ const UploadTool = (() => {
     }
   }
 
-  async function applyTextMask(maskUrl, label) {
-    const maskImg = await loadMaskImage(maskUrl);
+  // Remembers the last mask so it can be inverted without another API call
+  let lastTextMask = null;
+
+  async function applyTextMask(maskUrl, label, maxShare, forceInvert) {
+    const maskImg = typeof maskUrl === 'string' ? await loadMaskImage(maskUrl) : maskUrl;
     const w = els.canvasBase.width, h = els.canvasBase.height;
 
-    // Find or create a layer named after the prompt
     let idx = state.masks.findIndex(mk => mk.name === label);
     if (idx === -1) {
       const empty = findEmptyLayerIndex();
@@ -1744,7 +1745,8 @@ const UploadTool = (() => {
 
     let on = 0;
     for (let i = 0; i < sData.data.length; i += 4) {
-      const bright = sData.data[i] > 128 || sData.data[i + 1] > 128 || sData.data[i + 2] > 128;
+      let bright = sData.data[i] > 128 || sData.data[i + 1] > 128 || sData.data[i + 2] > 128;
+      if (forceInvert) bright = !bright;
       const v = bright ? 255 : 0;
       mData.data[i] = v; mData.data[i + 1] = v; mData.data[i + 2] = v;
       mData.data[i + 3] = bright ? 255 : 0;
@@ -1756,14 +1758,36 @@ const UploadTool = (() => {
     renderMaskOverlay();
     updateApplyButton();
 
-    const pct = (on / (w * h) * 100).toFixed(1);
-    els.textSegStatus.textContent = `✅ ${label} → ${pct}%`;
+    lastTextMask = { img: maskImg, label, maxShare, inverted: !!forceInvert };
+
+    const share = on / (w * h);
+    const pct = (share * 100).toFixed(1);
     console.log(`[TextSeg] Applied "${label}" to layer #${idx} — ${pct}% of image`);
 
-    // A near-total mask usually means the model returned an inverted image
-    if (on / (w * h) > 0.92) {
-      els.textSegStatus.textContent = `⚠ ${label}: маска терістелген болуы мүмкін`;
+    // Warn when the mask is far bigger than this kind of object should be
+    if (maxShare && share > maxShare) {
+      els.textSegStatus.textContent = `⚠ ${label}: ${pct}% — тым үлкен, дұрыс емес болуы мүмкін`;
+      showInvertButton(label);
+    } else {
+      els.textSegStatus.textContent = `✅ ${label} → ${pct}%`;
+      showInvertButton(label);
     }
+  }
+
+  function showInvertButton(label) {
+    const old = document.getElementById('textSegInvert');
+    if (old) old.remove();
+    if (!lastTextMask) return;
+
+    const b = document.createElement('button');
+    b.id = 'textSegInvert';
+    b.textContent = '↺ Маскаңы терістеу';
+    b.style.cssText = 'background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#e5e7eb;padding:4px 10px;border-radius:12px;cursor:pointer;font-size:11px;';
+    b.addEventListener('click', () => {
+      if (!lastTextMask) return;
+      applyTextMask(lastTextMask.img, lastTextMask.label, lastTextMask.maxShare, !lastTextMask.inverted);
+    });
+    els.textSegChips.appendChild(b);
   }
 
   // ===== PUBLIC API =====
