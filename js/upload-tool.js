@@ -180,9 +180,19 @@ const UploadTool = (() => {
           </div>
 
           <!-- Auto-segment button -->
-          <div class="auto-seg-bar hidden" id="auto-seg-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(124,58,237,0.1);border-radius:10px;margin-bottom:8px">
+          <div class="auto-seg-bar hidden" id="auto-seg-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(124,58,237,0.1);border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
             <button class="sam-run-btn" id="btn-auto-segment" style="background:#7c3aed;padding:7px 16px;font-size:13px;border-radius:7px;border:none;color:#fff;font-weight:600;cursor:pointer">🔮 Авто сегмент</button>
             <span id="auto-seg-status" style="color:#a78bfa;font-size:12px"></span>
+          </div>
+
+          <!-- Text-prompt segmentation -->
+          <div class="text-seg-bar hidden" id="text-seg-bar" style="display:none;flex-direction:column;gap:8px;padding:8px 12px;background:rgba(14,165,233,0.1);border-radius:10px;margin-bottom:8px">
+            <div style="display:flex;gap:6px;align-items:center">
+              <input id="text-seg-input" type="text" placeholder="roof, basement, window..." style="flex:1;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.15);border-radius:7px;padding:7px 10px;color:#fff;font-size:13px;outline:none">
+              <button id="btn-text-segment" style="background:#0ea5e9;padding:7px 14px;font-size:13px;border-radius:7px;border:none;color:#fff;font-weight:600;cursor:pointer;white-space:nowrap">🔍 Табу</button>
+            </div>
+            <div id="text-seg-chips" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+            <span id="text-seg-status" style="color:#7dd3fc;font-size:12px"></span>
           </div>
 
           <div class="edit-footer">
@@ -337,6 +347,12 @@ const UploadTool = (() => {
       autoSegBar: modal.querySelector('#auto-seg-bar'),
       btnAutoSegment: modal.querySelector('#btn-auto-segment'),
       autoSegStatus: modal.querySelector('#auto-seg-status'),
+      // Text-prompt segmentation
+      textSegBar: modal.querySelector('#text-seg-bar'),
+      textSegInput: modal.querySelector('#text-seg-input'),
+      btnTextSegment: modal.querySelector('#btn-text-segment'),
+      textSegChips: modal.querySelector('#text-seg-chips'),
+      textSegStatus: modal.querySelector('#text-seg-status'),
     };
   }
 
@@ -386,6 +402,18 @@ const UploadTool = (() => {
 
     // Auto-segment
     els.btnAutoSegment.addEventListener('click', runAutoSegment);
+
+    // Text-prompt segment
+    els.btnTextSegment.addEventListener('click', () => {
+      const v = els.textSegInput.value.trim();
+      if (v) runTextSegment(v, v);
+    });
+    els.textSegInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        const v = els.textSegInput.value.trim();
+        if (v) runTextSegment(v, v);
+      }
+    });
 
     // Actions
     els.btnUndo.addEventListener('click', undo);
@@ -478,6 +506,11 @@ const UploadTool = (() => {
     els.autoSegBar.classList.toggle('hidden', isLocal);
     els.autoSegBar.style.display = isLocal ? 'none' : 'flex';
     els.autoSegStatus.textContent = '';
+
+    els.textSegBar.classList.toggle('hidden', isLocal);
+    els.textSegBar.style.display = isLocal ? 'none' : 'flex';
+    els.textSegStatus.textContent = '';
+    renderTextSegChips();
   }
 
   function createMaskCanvas(w, h) {
@@ -1581,6 +1614,156 @@ const UploadTool = (() => {
       if (!hasPixels) return i;
     }
     return -1;
+  }
+
+  // ===== TEXT-PROMPT SEGMENTATION (Grounded SAM) =====
+  /* Grounding DINO finds the object from a text label, SAM turns the box
+     into a pixel mask. Works on anything the model can name, so it covers
+     roofs, socles and other things ADE20K has no class for. */
+  const TEXT_SEG_CHIPS = [
+    { prompt: 'roof',            label: 'Шатыр',   color: '#f97316' },
+    { prompt: 'basement, socle', label: 'Цоколь',  color: '#78716c' },
+    { prompt: 'facade wall',     label: 'Фасад',   color: '#0ea5e9' },
+    { prompt: 'window',          label: 'Терезе',  color: '#06b6d4' },
+    { prompt: 'door',            label: 'Есік',    color: '#f43f5e' },
+    { prompt: 'skirting board',  label: 'Плинтус', color: '#ec4899' },
+  ];
+
+  function renderTextSegChips() {
+    els.textSegChips.innerHTML = '';
+    TEXT_SEG_CHIPS.forEach(c => {
+      const b = document.createElement('button');
+      b.textContent = c.label;
+      b.style.cssText = `background:${c.color}22;border:1px solid ${c.color}66;color:${c.color};padding:4px 10px;border-radius:12px;cursor:pointer;font-size:11px;font-weight:500;`;
+      b.addEventListener('click', () => runTextSegment(c.prompt, c.label));
+      els.textSegChips.appendChild(b);
+    });
+  }
+
+  async function runTextSegment(prompt, label) {
+    if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
+
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (isLocal) { alert('Тек онлайн нұсқада жұмыс істейді (Vercel).'); return; }
+
+    els.btnTextSegment.disabled = true;
+    els.textSegStatus.textContent = `⏳ "${prompt}" ізделуде...`;
+
+    try {
+      // Resize to keep the upload small
+      const maxDim = 1024;
+      const ic = document.createElement('canvas');
+      let w = state.uploadedImage.width, h = state.uploadedImage.height;
+      if (w > maxDim || h > maxDim) {
+        const s = maxDim / Math.max(w, h);
+        w = Math.round(w * s); h = Math.round(h * s);
+      }
+      ic.width = w; ic.height = h;
+      ic.getContext('2d').drawImage(state.uploadedImage, 0, 0, w, h);
+      const base64 = ic.toDataURL('image/jpeg', 0.85);
+
+      const createRes = await fetch('/api/text-segment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: base64, prompt })
+      });
+      const createData = await createRes.json();
+      if (!createRes.ok) throw new Error(createData.error || 'API error');
+      const predId = createData.id;
+      if (!predId) throw new Error('No prediction ID');
+      console.log('[TextSeg] prediction:', predId, '| prompt:', prompt);
+
+      // Poll — reuse the auto-segment poller, it only needs an id
+      let output = null;
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const pollRes = await fetch('/api/auto-segment-poll?id=' + predId);
+        const d = await pollRes.json();
+        els.textSegStatus.textContent = `⏳ ${d.status} (${(i + 1) * 2}с)`;
+
+        if (d.status === 'succeeded') { output = d.output; break; }
+        if (d.status === 'failed' || d.status === 'canceled') {
+          throw new Error(d.error || 'Prediction ' + d.status);
+        }
+      }
+      if (!output) throw new Error('Timeout');
+
+      console.log('[TextSeg] output:', output);
+
+      // The model returns several images; the first is the mask
+      const maskUrl = Array.isArray(output) ? output[0] : output;
+      if (!maskUrl) throw new Error('Маска қайтарылмады');
+
+      await applyTextMask(maskUrl, label);
+
+    } catch (err) {
+      console.error('[TextSeg] Error:', err);
+      els.textSegStatus.textContent = '❌ ' + err.message;
+    } finally {
+      els.btnTextSegment.disabled = false;
+    }
+  }
+
+  async function applyTextMask(maskUrl, label) {
+    const maskImg = await loadMaskImage(maskUrl);
+    const w = els.canvasBase.width, h = els.canvasBase.height;
+
+    // Find or create a layer named after the prompt
+    let idx = state.masks.findIndex(mk => mk.name === label);
+    if (idx === -1) {
+      const empty = findEmptyLayerIndex();
+      const chip = TEXT_SEG_CHIPS.find(c => c.label === label);
+      const color = chip ? chip.color : '#0ea5e9';
+      if (empty !== -1) {
+        state.masks[empty].name = label;
+        state.masks[empty].color = color;
+        idx = empty;
+      } else {
+        if (state.masks.length >= 5) {
+          alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
+          els.textSegStatus.textContent = '⚠ Қабат лимиті';
+          return;
+        }
+        state.masks.push({ name: label, canvas: createMaskCanvas(w, h), color });
+        idx = state.masks.length - 1;
+      }
+    }
+
+    state.activeMaskIndex = idx;
+    saveUndoState();
+
+    const scaled = document.createElement('canvas');
+    scaled.width = w; scaled.height = h;
+    const sCtx = scaled.getContext('2d', { willReadFrequently: true });
+    sCtx.drawImage(maskImg, 0, 0, w, h);
+    const sData = sCtx.getImageData(0, 0, w, h);
+
+    const mCtx = state.masks[idx].canvas.getContext('2d');
+    mCtx.clearRect(0, 0, w, h);
+    const mData = mCtx.createImageData(w, h);
+
+    let on = 0;
+    for (let i = 0; i < sData.data.length; i += 4) {
+      const bright = sData.data[i] > 128 || sData.data[i + 1] > 128 || sData.data[i + 2] > 128;
+      const v = bright ? 255 : 0;
+      mData.data[i] = v; mData.data[i + 1] = v; mData.data[i + 2] = v;
+      mData.data[i + 3] = bright ? 255 : 0;
+      if (bright) on++;
+    }
+    mCtx.putImageData(mData, 0, 0);
+
+    renderLayers();
+    renderMaskOverlay();
+    updateApplyButton();
+
+    const pct = (on / (w * h) * 100).toFixed(1);
+    els.textSegStatus.textContent = `✅ ${label} → ${pct}%`;
+    console.log(`[TextSeg] Applied "${label}" to layer #${idx} — ${pct}% of image`);
+
+    // A near-total mask usually means the model returned an inverted image
+    if (on / (w * h) > 0.92) {
+      els.textSegStatus.textContent = `⚠ ${label}: маска терістелген болуы мүмкін`;
+    }
   }
 
   // ===== PUBLIC API =====
