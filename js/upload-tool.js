@@ -1693,7 +1693,9 @@ const UploadTool = (() => {
       const maskUrl = Array.isArray(output) ? output[0] : output;
       if (!maskUrl) throw new Error('Маска қайтарылмады');
 
-      await applyTextMask(maskUrl, label, maxShare);
+      // This model returns an INVERTED mask (object is black, rest is white),
+      // so flip it by default. The button lets you switch back if needed.
+      await applyTextMask(maskUrl, label, maxShare, true);
 
     } catch (err) {
       console.error('[TextSeg] Error:', err);
@@ -1781,7 +1783,7 @@ const UploadTool = (() => {
 
     const b = document.createElement('button');
     b.id = 'textSegInvert';
-    b.textContent = '↺ Маскаңы терістеу';
+    b.textContent = lastTextMask.inverted ? '↺ Кері қайтару' : '↺ Терістеу';
     b.style.cssText = 'background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#e5e7eb;padding:4px 10px;border-radius:12px;cursor:pointer;font-size:11px;';
     b.addEventListener('click', () => {
       if (!lastTextMask) return;
