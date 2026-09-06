@@ -225,8 +225,29 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   .panel{width:240px}
   .pn-grid{grid-template-columns:repeat(6,1fr)}
 }
+/* Mobile menu button — hidden on desktop */
+.tb-menu{
+  display:none;background:none;border:none;color:var(--text);
+  font-size:20px;padding:0 10px;cursor:pointer;line-height:1;
+}
+.sb-overlay{display:none}
+
 @media(max-width:860px){
-  .sidebar{display:none}
+  .tb-menu{display:block}
+  /* The sidebar holds the room list and the upload button, so it can't
+     just be hidden on phones — it slides in over the canvas instead. */
+  .sidebar{
+    display:flex;position:fixed;top:0;left:0;bottom:0;width:min(280px,82vw);
+    z-index:200;transform:translateX(-100%);transition:transform .25s ease;
+    box-shadow:4px 0 24px rgba(0,0,0,.25);padding-top:56px;
+  }
+  .sidebar.open{transform:translateX(0)}
+  .sb-overlay{
+    display:block;position:fixed;inset:0;background:rgba(0,0,0,.45);
+    z-index:199;opacity:0;pointer-events:none;transition:opacity .25s ease;
+  }
+  .sb-overlay.open{opacity:1;pointer-events:auto}
+
   .panel{width:100%;position:absolute;bottom:0;left:0;right:0;height:45vh;z-index:50;border-top:1px solid var(--border);border-left:none;border-radius:var(--radius-xl) var(--radius-xl) 0 0}
   .pn-grid{grid-template-columns:repeat(9,1fr)}
   .float-bar{bottom:auto;top:12px}
@@ -280,6 +301,7 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
 
 <!-- TOOLBAR -->
 <div class="toolbar">
+  <button class="tb-menu" onclick="toggleSidebar()" id="menuBtn" aria-label="Мәзір">☰</button>
   <div class="tb-logo">eco<b>line</b></div>
   <button class="tb-btn" onclick="resetAll()" id="btnReset"><span id="txReset">Тазалау</span></button>
   <div class="tb-sep"></div>
@@ -293,12 +315,13 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
 <div class="app">
 
   <!-- LEFT SIDEBAR -->
-  <div class="sidebar">
+  <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
+  <div class="sidebar" id="sidebar">
     <div class="sb-section">
       <div class="sb-title" id="txRooms">БӨЛМЕЛЕР</div>
       <div class="sb-rooms" id="roomList"></div>
     </div>
-    <button class="sb-upload" onclick="UploadTool.open()" id="btnUpload">📷 <span id="txUpload">Өз фотоңызды жүктеу</span></button>
+    <button class="sb-upload" onclick="closeSidebarOnMobile();UploadTool.open()" id="btnUpload">📷 <span id="txUpload">Өз фотоңызды жүктеу</span></button>
     <div class="sb-divider"></div>
     <div class="sb-section" id="surfSec" style="display:none;flex:1;overflow:hidden;display:flex;flex-direction:column">
       <div class="sb-title" id="txSurf">БЕТКЕЙЛЕР</div>
@@ -367,6 +390,19 @@ async function init(){
 }
 
 /* ══════ THEME ══════ */
+/* Mobile sidebar. On phones the room list lives in a slide-in panel,
+   so picking a room or opening the uploader should close it again. */
+function toggleSidebar(force){
+  var sb=document.getElementById('sidebar'),ov=document.getElementById('sbOverlay');
+  if(!sb)return;
+  var open=(force===undefined)?!sb.classList.contains('open'):force;
+  sb.classList.toggle('open',open);
+  if(ov)ov.classList.toggle('open',open);
+}
+function closeSidebarOnMobile(){
+  if(window.innerWidth<=860)toggleSidebar(false);
+}
+
 function toggleTheme(){
   darkMode=!darkMode;
   document.documentElement.setAttribute('data-theme',darkMode?'dark':'light');
@@ -405,7 +441,7 @@ function renderRooms(){
   rooms.forEach(function(r){
     var d=document.createElement('div');d.className='room'+(selRoom?.id===r.id?' on':'');
     d.innerHTML='<div class="room-icon">'+icon(r.id)+'</div><span>'+N(r)+'</span>';
-    d.onclick=function(){selectRoom(r)};el.appendChild(d);
+    d.onclick=function(){closeSidebarOnMobile();selectRoom(r)};el.appendChild(d);
   });
 }
 
@@ -551,7 +587,7 @@ function hsl2rgb(h,s,l){
 
 /* Жаңа түстің жарықтығы қанша үлес алады (0..1).
    Азайтсаң — фотоның көлеңкесі басым, көбейтсең — түс жалпақтау болады. */
-var LIGHT_MIX=0.35;
+var LIGHT_MIX=0.25;
 
 function repaintAll(){
   var c=document.getElementById('mainCanvas'),ctx=c.getContext('2d'),W=c.width,H=c.height;
