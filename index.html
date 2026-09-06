@@ -248,10 +248,33 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   }
   .sb-overlay.open{opacity:1;pointer-events:auto}
 
-  .panel{width:100%;position:absolute;bottom:0;left:0;right:0;height:45vh;z-index:50;border-top:1px solid var(--border);border-left:none;border-radius:var(--radius-xl) var(--radius-xl) 0 0}
+  /* The palette sits over the canvas on phones, so the canvas needs to
+     end where the panel starts — otherwise the photo hides behind it. */
+  .canvas-area{padding-bottom:44vh}
+  .panel{
+    width:100%;position:absolute;bottom:0;left:0;right:0;height:45vh;z-index:50;
+    border-top:1px solid var(--border);border-left:none;
+    border-radius:var(--radius-xl) var(--radius-xl) 0 0;
+    transition:transform .25s ease;padding-top:14px;
+  }
+  /* Collapsed: only the grab handle and the header peek above the edge */
+  .panel.collapsed{transform:translateY(calc(45vh - 52px))}
+  .panel.collapsed ~ .canvas-area,
+  .canvas-area.expanded{padding-bottom:52px}
+
+  .pn-handle{
+    display:block;position:absolute;top:6px;left:50%;transform:translateX(-50%);
+    width:40px;height:4px;border-radius:2px;background:var(--border);
+    cursor:pointer;
+  }
+  .pn-handle::after{
+    content:'';position:absolute;inset:-12px -40px;
+  }
+
   .pn-grid{grid-template-columns:repeat(9,1fr)}
   .float-bar{bottom:auto;top:12px}
 }
+.pn-handle{display:none}
 @media(max-width:480px){
   .toolbar{padding:0 8px;gap:2px}
   .tb-btn{padding:0 8px;font-size:11px}
@@ -354,7 +377,8 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   </div>
 
   <!-- RIGHT PANEL -->
-  <div class="panel">
+  <div class="panel" id="palettePanel">
+    <div class="pn-handle" onclick="togglePanel()"></div>
     <div class="pn-head">
       <h3 id="txColors">Түстер</h3>
       <span class="pn-badge">NOVA 2024</span>
@@ -390,6 +414,16 @@ async function init(){
 }
 
 /* ══════ THEME ══════ */
+/* Palette panel on phones: tap the handle to slide it down and see
+   the whole photo, tap again to bring the colours back. */
+function togglePanel(){
+  var p=document.getElementById('palettePanel');
+  var c=document.querySelector('.canvas-area');
+  if(!p)return;
+  var collapsed=p.classList.toggle('collapsed');
+  if(c)c.classList.toggle('expanded',collapsed);
+}
+
 /* Mobile sidebar. On phones the room list lives in a slide-in panel,
    so picking a room or opening the uploader should close it again. */
 function toggleSidebar(force){
