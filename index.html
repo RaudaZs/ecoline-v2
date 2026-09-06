@@ -57,8 +57,11 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   padding:0 16px;background:var(--surface);border-bottom:1px solid var(--border);
   position:relative;z-index:100;transition:background var(--transition);
 }
-.tb-logo{font-size:18px;font-weight:800;color:var(--primary);letter-spacing:-.5px;padding-right:12px;border-right:1px solid var(--border);margin-right:6px}
-.tb-logo b{color:var(--text)}
+.tb-logo{display:flex;align-items:center;padding-right:12px;border-right:1px solid var(--border);margin-right:6px}
+.tb-logo img{height:24px;width:auto;display:block}
+/* The logo artwork is dark, so lift it out of the dark background */
+[data-theme="dark"] .tb-logo img{filter:brightness(0) invert(1)}
+@media(max-width:480px){.tb-logo img{height:20px}}
 .tb-sep{width:1px;height:24px;background:var(--border);margin:0 4px;flex-shrink:0}
 .tb-btn{
   display:flex;align-items:center;justify-content:center;gap:5px;
@@ -325,7 +328,7 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
 <!-- TOOLBAR -->
 <div class="toolbar">
   <button class="tb-menu" onclick="toggleSidebar()" id="menuBtn" aria-label="Мәзір">☰</button>
-  <div class="tb-logo">eco<b>line</b></div>
+  <a href="/" class="tb-logo"><img src="images/ecoline-logo.webp" alt="Ecoline"></a>
   <button class="tb-btn" onclick="resetAll()" id="btnReset"><span id="txReset">Тазалау</span></button>
   <div class="tb-sep"></div>
   <div class="tb-spacer"></div>
