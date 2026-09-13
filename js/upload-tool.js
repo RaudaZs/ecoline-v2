@@ -1464,8 +1464,168 @@ const UploadTool = (() => {
         btn.addEventListener('click', () => applyAutoSegMask(key));
         picker.appendChild(btn);
       }
+      /* Skirting isn't a class any model knows — it's derived from the
+         bottom edge of the wall mask, where a skirting board always sits. */
+      if (autoSegMasks.wall) {
+        const sk = document.createElement('button');
+        sk.textContent = 'Плинтус';
+        sk.style.cssText = 'background:#ec4899;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;';
+        sk.addEventListener('click', () => buildSkirting());
+        picker.appendChild(sk);
+      }
     }
     els.autoSegBar.appendChild(picker);
+  }
+
+  // ===== SKIRTING (geometric, no model call) =====
+  let skirtEdge = null, skirtW = 0, skirtH = 0;
+
+  async function buildSkirting() {
+    if (!autoSegMasks.wall) return;
+    els.autoSegStatus.textContent = '⏳ Плинтус есептелуде...';
+
+    try {
+      const w = els.canvasBase.width, h = els.canvasBase.height;
+      skirtW = w; skirtH = h;
+
+      const wallImg = await loadMaskImage(autoSegMasks.wall.maskUrl);
+      const wc = document.createElement('canvas');
+      wc.width = w; wc.height = h;
+      const wCtx = wc.getContext('2d', { willReadFrequently: true });
+      wCtx.drawImage(wallImg, 0, 0, w, h);
+      const wData = wCtx.getImageData(0, 0, w, h).data;
+
+      // Bottom-most wall pixel per column, ignoring single-pixel noise
+      const bottoms = new Int32Array(w).fill(-1);
+      for (let x = 0; x < w; x++) {
+        for (let y = h - 1; y >= 2; y--) {
+          if (wData[(y * w + x) * 4] > 128 &&
+              wData[((y - 1) * w + x) * 4] > 128 &&
+              wData[((y - 2) * w + x) * 4] > 128) { bottoms[x] = y; break; }
+        }
+      }
+
+      // Median smoothing — the mask edge is jagged at this scale
+      const R = Math.max(2, Math.round(w * 0.012));
+      const sm = new Int32Array(w).fill(-1);
+      const buf = [];
+      for (let x = 0; x < w; x++) {
+        buf.length = 0;
+        for (let k = -R; k <= R; k++) {
+          const v = bottoms[x + k];
+          if (v !== undefined && v > 0) buf.push(v);
+        }
+        if (buf.length < 3) continue;
+        buf.sort((a, b) => a - b);
+        sm[x] = buf[buf.length >> 1];
+      }
+
+      // Bridge gaps left by furniture or doorways
+      const edge = Int32Array.from(sm);
+      let prev = -1;
+      for (let x = 0; x < w; x++) {
+        if (edge[x] > 0) { prev = x; continue; }
+        let next = -1;
+        for (let k = x + 1; k < w; k++) if (edge[k] > 0) { next = k; break; }
+        if (prev !== -1 && next !== -1) {
+          const t = (x - prev) / (next - prev);
+          edge[x] = Math.round(edge[prev] + t * (edge[next] - edge[prev]));
+        } else if (prev !== -1) edge[x] = edge[prev];
+        else if (next !== -1) edge[x] = edge[next];
+      }
+      skirtEdge = edge;
+
+      const band = Math.max(3, Math.round(h * 0.022));
+      drawSkirting(band, 0);
+      showSkirtingSliders(band, Math.max(2, Math.round(h * 0.006)), Math.round(h * 0.05));
+
+    } catch (err) {
+      console.error('[Skirting]', err);
+      els.autoSegStatus.textContent = '❌ Плинтус қатесі';
+    }
+  }
+
+  /* band = thickness in px, shift = move the strip up (−) or down (+) */
+  function drawSkirting(band, shift) {
+    if (!skirtEdge) return;
+    const w = skirtW, h = skirtH;
+    const out = new Uint8ClampedArray(w * h * 4);
+    let painted = 0;
+
+    for (let x = 0; x < w; x++) {
+      const bot = skirtEdge[x] + shift;
+      if (bot <= 0 || bot >= h) continue;
+      const from = Math.max(0, bot - band);
+      for (let y = from; y < bot; y++) {
+        const p = (y * w + x) * 4;
+        out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
+        painted++;
+      }
+    }
+    if (painted < 50) return;
+
+    let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
+    if (idx === -1) {
+      const empty = findEmptyLayerIndex();
+      if (empty !== -1) {
+        state.masks[empty].name = 'Плинтус';
+        state.masks[empty].color = '#ec4899';
+        idx = empty;
+      } else {
+        if (state.masks.length >= 5) {
+          alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
+          return;
+        }
+        state.masks.push({ name: 'Плинтус', canvas: createMaskCanvas(w, h), color: '#ec4899' });
+        idx = state.masks.length - 1;
+      }
+      saveUndoState();
+    }
+
+    state.activeMaskIndex = idx;
+    const mCtx = state.masks[idx].canvas.getContext('2d');
+    mCtx.clearRect(0, 0, w, h);
+    mCtx.putImageData(new ImageData(out, w, h), 0, 0);
+
+    renderLayers();
+    renderMaskOverlay();
+    updateApplyButton();
+  }
+
+  function showSkirtingSliders(band, minB, maxB) {
+    const old = document.getElementById('skirtCtl');
+    if (old) old.remove();
+
+    const box = document.createElement('div');
+    box.id = 'skirtCtl';
+    box.style.cssText = 'display:flex;flex-direction:column;gap:6px;width:100%;margin-top:8px;padding:8px 10px;background:rgba(236,72,153,0.08);border-radius:8px;';
+
+    let curBand = band, curShift = 0;
+    const row = (label, min, max, val, onInput) => {
+      const r = document.createElement('div');
+      r.style.cssText = 'display:flex;align-items:center;gap:8px;';
+      const lb = document.createElement('span');
+      lb.textContent = label;
+      lb.style.cssText = 'color:#f9a8d4;font-size:11px;min-width:62px;';
+      const sl = document.createElement('input');
+      sl.type = 'range'; sl.min = min; sl.max = max; sl.value = val;
+      sl.style.cssText = 'flex:1;accent-color:#ec4899;';
+      const num = document.createElement('span');
+      num.textContent = val + 'px';
+      num.style.cssText = 'color:#fbcfe8;font-size:11px;min-width:38px;text-align:right;';
+      sl.addEventListener('input', () => {
+        num.textContent = sl.value + 'px';
+        onInput(parseInt(sl.value, 10));
+      });
+      r.append(lb, sl, num);
+      return r;
+    };
+
+    box.appendChild(row('Қалыңдық', minB, maxB, band, v => { curBand = v; drawSkirting(curBand, curShift); }));
+    box.appendChild(row('Жылжыту', -40, 40, 0, v => { curShift = v; drawSkirting(curBand, curShift); }));
+
+    els.autoSegBar.appendChild(box);
+    els.autoSegStatus.textContent = '✅ Плинтус — слайдермен реттеңіз';
   }
 
 
