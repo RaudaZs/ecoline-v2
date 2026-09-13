@@ -1505,6 +1505,17 @@ const UploadTool = (() => {
         }
       }
 
+      /* A skirting board meets the floor, so the edge should sit low in the
+         frame and run roughly level. Columns above a doorway report the top
+         of the door frame as their "bottom" — drop those. */
+      const valid = Array.from(bottoms).filter(v => v > 0).sort((a, b) => a - b);
+      if (!valid.length) { els.autoSegStatus.textContent = '⚠ Қабырға шекарасы табылмады'; return; }
+      const floorLine = valid[Math.floor(valid.length * 0.75)];
+      const tolerance = h * 0.15;
+      for (let x = 0; x < w; x++) {
+        if (bottoms[x] > 0 && bottoms[x] < floorLine - tolerance) bottoms[x] = -1;
+      }
+
       // Median smoothing — the mask edge is jagged at this scale
       const R = Math.max(2, Math.round(w * 0.012));
       const sm = new Int32Array(w).fill(-1);
@@ -1535,9 +1546,9 @@ const UploadTool = (() => {
       }
       skirtEdge = edge;
 
-      const band = Math.max(3, Math.round(h * 0.022));
+      const band = Math.max(3, Math.round(h * 0.014));
       drawSkirting(band, 0);
-      showSkirtingSliders(band, Math.max(2, Math.round(h * 0.006)), Math.round(h * 0.05));
+      showSkirtingSliders(band, 2, Math.round(h * 0.045));
 
     } catch (err) {
       console.error('[Skirting]', err);
