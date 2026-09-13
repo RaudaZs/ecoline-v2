@@ -1788,14 +1788,46 @@ const UploadTool = (() => {
       const sData = sCtx.getImageData(0, 0, w, h);
       const mData = mCtx.createImageData(w, h);
 
+      /* The model works at 640px and the mask is stretched to the photo's
+         full size, which smears every edge outward. A higher cutoff pulls
+         the boundary back to where the object actually ends. */
+      const EDGE = 190;
+
       for (let i = 0; i < sData.data.length; i += 4) {
-        const bright = sData.data[i] > 128 || sData.data[i + 1] > 128 || sData.data[i + 2] > 128;
+        const bright = sData.data[i] > EDGE || sData.data[i + 1] > EDGE || sData.data[i + 2] > EDGE;
         const v = bright ? 255 : 0;
         mData.data[i] = v;
         mData.data[i + 1] = v;
         mData.data[i + 2] = v;
         mData.data[i + 3] = bright ? 255 : 0;
       }
+
+      /* Where two stretched masks overlap, the pixel belongs to the smaller
+         object — a door edge is a door, not the wall behind it. */
+      const neighbours = key === 'wall'
+        ? ['door', 'windowpane', 'ceiling', 'floor']
+        : (key === 'ceiling' || key === 'floor') ? ['door', 'windowpane'] : [];
+
+      for (const nk of neighbours) {
+        if (!autoSegMasks[nk]) continue;
+        try {
+          const nImg = await loadMaskImage(autoSegMasks[nk].maskUrl);
+          const nc = document.createElement('canvas');
+          nc.width = w; nc.height = h;
+          const nCtx = nc.getContext('2d', { willReadFrequently: true });
+          nCtx.drawImage(nImg, 0, 0, w, h);
+          const nData = nCtx.getImageData(0, 0, w, h).data;
+          for (let i = 0; i < mData.data.length; i += 4) {
+            if (mData.data[i + 3] > 0 && nData[i] > 128) {
+              mData.data[i] = 0; mData.data[i + 1] = 0;
+              mData.data[i + 2] = 0; mData.data[i + 3] = 0;
+            }
+          }
+        } catch (e) {
+          console.warn('[AutoSeg] neighbour mask skipped:', nk, e.message);
+        }
+      }
+
       mCtx.putImageData(mData, 0, 0);
 
       /* A fresh wall mask covers the skirting area again, so re-apply the
