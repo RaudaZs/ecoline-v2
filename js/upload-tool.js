@@ -1481,6 +1481,7 @@ const UploadTool = (() => {
   let skirtEdge = null, skirtW = 0, skirtH = 0;
   let skirtDoor = null;   // door mask, so the strip skips door frames
   let skirtWallBackup = null;  // pristine wall layer, re-cut on every slider move
+  let skirtBand = 0, skirtShift = 0;  // current slider values, for re-cutting
 
   async function buildSkirting() {
     if (!autoSegMasks.wall) return;
@@ -1573,6 +1574,7 @@ const UploadTool = (() => {
   /* band = thickness in px, shift = move the strip up (−) or down (+) */
   function drawSkirting(band, shift) {
     if (!skirtEdge) return;
+    skirtBand = band; skirtShift = shift;
     const w = skirtW, h = skirtH;
     const out = new Uint8ClampedArray(w * h * 4);
     let painted = 0;
@@ -1795,6 +1797,13 @@ const UploadTool = (() => {
         mData.data[i + 3] = bright ? 255 : 0;
       }
       mCtx.putImageData(mData, 0, 0);
+
+      /* A fresh wall mask covers the skirting area again, so re-apply the
+         cut with the slider values the user already settled on. */
+      if (key === 'wall' && skirtEdge && skirtBand > 0) {
+        drawSkirting(skirtBand, skirtShift);
+        state.activeMaskIndex = targetIndex;
+      }
 
       renderLayers();
       renderMaskOverlay();
