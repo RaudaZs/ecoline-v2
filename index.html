@@ -4,44 +4,54 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ECOLINE — Color Visualizer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
 /* ══════ TOKENS ══════ */
+/* The paint colours are the only saturated thing on screen. Everything
+   around them stays neutral so a client can judge a shade honestly. */
 :root {
   --primary: #2D6A4F;
   --accent: #40916C;
-  --accent-pale: #D8F3DC;
-  --bg: #F6F7F8;
+  --accent-pale: #EAF2ED;
+  --bg: #FAFAFA;
   --surface: #FFFFFF;
-  --surface2: #F0F1F3;
-  --text: #1A1A1A;
-  --text2: #6B7280;
-  --text3: #9CA3AF;
-  --border: #E5E7EB;
-  --glass: rgba(255,255,255,0.72);
-  --glass-border: rgba(255,255,255,0.18);
-  --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.06);
-  --shadow-lg: 0 4px 12px rgba(0,0,0,0.08), 0 24px 48px rgba(0,0,0,0.12);
-  --radius: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
+  --surface2: #F4F4F5;
+  --text: #18181B;
+  --text2: #71717A;
+  --text3: #A1A1AA;
+  --border: #E4E4E7;
+  --glass: rgba(255,255,255,0.82);
+  --glass-border: rgba(0,0,0,0.06);
+  /* Shadows only where something genuinely floats above the page */
+  --shadow: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  /* 4px baseline grid */
+  --s1: 4px;  --s2: 8px;  --s3: 12px;
+  --s4: 16px; --s5: 24px; --s6: 32px;
   --sidebar-w: 280px;
   --panel-w: 300px;
   --toolbar-h: 58px;
-  --transition: .2s cubic-bezier(.4,0,.2,1);
-  --font: 'SF Pro Display',-apple-system,'Segoe UI',system-ui,sans-serif;
+  --transition: .18s cubic-bezier(.4,0,.2,1);
+  --font: 'Manrope','SF Pro Display',-apple-system,'Segoe UI',system-ui,sans-serif;
 }
 [data-theme="dark"] {
-  --bg: #0F0F0F;
-  --surface: #1A1A1A;
-  --surface2: #242424;
-  --text: #F0F0F0;
-  --text2: #9CA3AF;
-  --text3: #6B7280;
-  --border: #2A2A2A;
-  --glass: rgba(30,30,30,0.78);
-  --glass-border: rgba(255,255,255,0.06);
-  --shadow: 0 1px 3px rgba(0,0,0,0.2), 0 8px 24px rgba(0,0,0,0.3);
-  --shadow-lg: 0 4px 12px rgba(0,0,0,0.3), 0 24px 48px rgba(0,0,0,0.5);
+  --accent-pale: #1C2E24;
+  --bg: #0C0C0D;
+  --surface: #161617;
+  --surface2: #1F1F21;
+  --text: #FAFAFA;
+  --text2: #A1A1AA;
+  --text3: #71717A;
+  --border: #27272A;
+  --glass: rgba(22,22,23,0.82);
+  --glass-border: rgba(255,255,255,0.08);
+  --shadow: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.5);
 }
 
 /* ══════ RESET ══════ */
@@ -89,7 +99,7 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   flex-shrink:0;
 }
 .sb-section{padding:16px}
-.sb-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:10px}
+.sb-title{font-size:12px;font-weight:600;color:var(--text2);margin-bottom:10px}
 .sb-rooms{display:flex;flex-direction:column;gap:3px}
 .room{
   display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:var(--radius);
@@ -119,6 +129,7 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
 #mainCanvas{
   max-width:calc(100% - 40px);max-height:calc(100% - 40px);
   border-radius:var(--radius);
+  border:1px solid var(--border);
   box-shadow:var(--shadow-lg);
   transition:box-shadow var(--transition);
 }
@@ -344,13 +355,13 @@ input{font-family:inherit;border:none;outline:none;background:none;color:inherit
   <div class="sb-overlay" id="sbOverlay" onclick="toggleSidebar()"></div>
   <div class="sidebar" id="sidebar">
     <div class="sb-section">
-      <div class="sb-title" id="txRooms">БӨЛМЕЛЕР</div>
+      <div class="sb-title" id="txRooms">Бөлмелер</div>
       <div class="sb-rooms" id="roomList"></div>
     </div>
     <button class="sb-upload" onclick="closeSidebarOnMobile();UploadTool.open()" id="btnUpload">📷 <span id="txUpload">Өз фотоңызды жүктеу</span></button>
     <div class="sb-divider"></div>
     <div class="sb-section" id="surfSec" style="display:none;flex:1;overflow:hidden;display:flex;flex-direction:column">
-      <div class="sb-title" id="txSurf">БЕТКЕЙЛЕР</div>
+      <div class="sb-title" id="txSurf">Беткейлер</div>
       <div class="sb-surfaces" id="layList"></div>
     </div>
   </div>
@@ -403,7 +414,7 @@ var darkMode=false;
 
 var ICONS={hallway:'🚪',bedroom:'🛏️',living:'🛋️',kitchen:'🍳',bathroom:'🚿',office:'💻',facade:'🏠',child:'🧒'};
 var CATS={blue:{kk:'Көк',ru:'Синие',en:'Blue'},green:{kk:'Жасыл',ru:'Зелёные',en:'Green'},warm:{kk:'Жылы',ru:'Тёплые',en:'Warm'},light:{kk:'Ашық',ru:'Светлые',en:'Light'},deep:{kk:'Терең',ru:'Глубокие',en:'Deep'},grey:{kk:'Сұр',ru:'Серые',en:'Grey'},purple:{kk:'Күлгін',ru:'Фиолет.',en:'Purple'}};
-var T={rooms:{kk:'БӨЛМЕЛЕР',ru:'КОМНАТЫ',en:'ROOMS'},surf:{kk:'БЕТКЕЙЛЕР',ru:'ПОВЕРХНОСТИ',en:'SURFACES'},colors:{kk:'Түстер',ru:'Цвета',en:'Colors'},search:{kk:'Түс іздеу...',ru:'Поиск цвета...',en:'Search...'},hint:{kk:'Беткей мен түс таңдаңыз',ru:'Выберите поверхность и цвет',en:'Select surface & color'},reset:{kk:'Тазалау',ru:'Сброс',en:'Reset'},dl:{kk:'Жүктеу',ru:'Скачать',en:'Download'},overlay:{kk:'Бөлме таңдаңыз',ru:'Выберите комнату',en:'Select a room'},all:{kk:'Барлығы',ru:'Все',en:'All'},upload:{kk:'Өз фотоңызды жүктеу',ru:'Загрузить своё фото',en:'Upload your photo'}};
+var T={rooms:{kk:'Бөлмелер',ru:'Комнаты',en:'Rooms'},surf:{kk:'Беткейлер',ru:'Поверхности',en:'Surfaces'},colors:{kk:'Түстер',ru:'Цвета',en:'Colors'},search:{kk:'Түс іздеу...',ru:'Поиск цвета...',en:'Search...'},hint:{kk:'Беткей мен түс таңдаңыз',ru:'Выберите поверхность и цвет',en:'Select surface & color'},reset:{kk:'Тазалау',ru:'Сброс',en:'Reset'},dl:{kk:'Жүктеу',ru:'Скачать',en:'Download'},overlay:{kk:'Бөлме таңдаңыз',ru:'Выберите комнату',en:'Select a room'},all:{kk:'Барлығы',ru:'Все',en:'All'},upload:{kk:'Өз фотоңызды жүктеу',ru:'Загрузить своё фото',en:'Upload your photo'}};
 
 function N(o){return o.name?.[lang]||o.name?.en||''}
 function icon(id){for(var k in ICONS)if(id.includes(k))return ICONS[k];return'🏠'}
@@ -622,9 +633,9 @@ function hsl2rgb(h,s,l){
   ];
 }
 
-/* Жаңа түстің жарықтығы қанша үлес алады (0..1).
-   Азайтсаң — фотоның көлеңкесі басым, көбейтсең — түс жалпақтау болады. */
-var LIGHT_MIX=0.25;
+/* How strongly the photo's own shading shows through, 0..1.
+   Lower = flatter, higher = more of the room's texture and shadows. */
+var TEXTURE=0.6;
 
 function repaintAll(){
   var c=document.getElementById('mainCanvas'),ctx=c.getContext('2d'),W=c.width,H=c.height;
@@ -634,16 +645,32 @@ function repaintAll(){
     var R=parseInt(info.hex.slice(1,3),16),G=parseInt(info.hex.slice(3,5),16),B=parseInt(info.hex.slice(5,7),16);
     var hsl=rgb2hsl(R,G,B),cH=hsl[0],cS=hsl[1],cL=hsl[2];
 
-    /* Іздеу кестесі: түпнұсқа жарықтық (0..255) → жаңа RGB.
-       Пиксель сайын hsl2rgb шақырмау үшін, 256 есептеу жеткілікті. */
+    var base=baseImageData.data,mask=m.data;
+
+    /* Average lightness inside the mask. The colour lands on this value,
+       and the photo's lighter and darker areas move around it — so a dark
+       shade stays dark instead of being dragged toward the wall's own tone. */
+    var sum=0,cnt=0;
+    for(var i=0;i<mask.length;i+=4){
+      if(mask[i]<=128)continue;
+      var oR=base[i],oG=base[i+1],oB=base[i+2];
+      var mx=oR>oG?(oR>oB?oR:oB):(oG>oB?oG:oB);
+      var mn=oR<oG?(oR<oB?oR:oB):(oG<oB?oG:oB);
+      sum+=(mx+mn)>>1;cnt++;
+    }
+    if(!cnt)continue;
+    var mean=sum/cnt/255;
+
+    /* Lookup table: original lightness (0..255) → new RGB */
     var lutR=new Uint8Array(256),lutG=new Uint8Array(256),lutB=new Uint8Array(256);
     for(var v=0;v<256;v++){
-      var nL=cL*LIGHT_MIX+(v/255)*(1-LIGHT_MIX);
+      var nL=cL+(v/255-mean)*TEXTURE;
+      if(nL<0)nL=0;else if(nL>1)nL=1;
       var o=hsl2rgb(cH,cS,nL);
       lutR[v]=o[0];lutG[v]=o[1];lutB[v]=o[2];
     }
 
-    var d=ctx.getImageData(0,0,W,H),px=d.data,base=baseImageData.data,mask=m.data;
+    var d=ctx.getImageData(0,0,W,H),px=d.data;
     for(var i=0;i<px.length;i+=4){
       if(mask[i]<=128)continue;
       var oR=base[i],oG=base[i+1],oB=base[i+2];
