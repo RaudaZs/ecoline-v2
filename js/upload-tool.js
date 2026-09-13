@@ -1479,6 +1479,8 @@ const UploadTool = (() => {
 
   // ===== SKIRTING (geometric, no model call) =====
   let skirtEdge = null, skirtW = 0, skirtH = 0;
+  let skirtDoor = null;   // door mask, so the strip skips door frames
+  let skirtWallBackup = null;  // pristine wall layer, re-cut on every slider move
 
   async function buildSkirting() {
     if (!autoSegMasks.wall) return;
@@ -1494,6 +1496,18 @@ const UploadTool = (() => {
       const wCtx = wc.getContext('2d', { willReadFrequently: true });
       wCtx.drawImage(wallImg, 0, 0, w, h);
       const wData = wCtx.getImageData(0, 0, w, h).data;
+
+      /* A door frame reaches the floor too, so without this the strip would
+         run straight across the bottom of the door. */
+      skirtDoor = null;
+      if (autoSegMasks.door) {
+        const dImg = await loadMaskImage(autoSegMasks.door.maskUrl);
+        const dc = document.createElement('canvas');
+        dc.width = w; dc.height = h;
+        const dCtx = dc.getContext('2d', { willReadFrequently: true });
+        dCtx.drawImage(dImg, 0, 0, w, h);
+        skirtDoor = dCtx.getImageData(0, 0, w, h).data;
+      }
 
       // Bottom-most wall pixel per column, ignoring single-pixel noise
       const bottoms = new Int32Array(w).fill(-1);
@@ -1569,6 +1583,7 @@ const UploadTool = (() => {
       const from = Math.max(0, bot - band);
       for (let y = from; y < bot; y++) {
         const p = (y * w + x) * 4;
+        if (skirtDoor && skirtDoor[p] > 128) continue;   // door frame
         out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
         painted++;
       }
@@ -1597,6 +1612,25 @@ const UploadTool = (() => {
     const mCtx = state.masks[idx].canvas.getContext('2d');
     mCtx.clearRect(0, 0, w, h);
     mCtx.putImageData(new ImageData(out, w, h), 0, 0);
+
+    /* Cut the strip out of the wall layer, so the two never share pixels.
+       Re-cut from a pristine copy each time, otherwise dragging the slider
+       would eat further into the wall on every move. */
+    const wallIdx = state.masks.findIndex(mk => mk.name === 'Қабырға');
+    if (wallIdx !== -1) {
+      const wlCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
+      if (!skirtWallBackup) {
+        skirtWallBackup = wlCtx.getImageData(0, 0, w, h);
+      }
+      const wl = new ImageData(new Uint8ClampedArray(skirtWallBackup.data), w, h);
+      for (let i = 3; i < out.length; i += 4) {
+        if (out[i] > 0) {
+          wl.data[i - 3] = 0; wl.data[i - 2] = 0;
+          wl.data[i - 1] = 0; wl.data[i] = 0;
+        }
+      }
+      wlCtx.putImageData(wl, 0, 0);
+    }
 
     renderLayers();
     renderMaskOverlay();
@@ -1661,6 +1695,8 @@ const UploadTool = (() => {
   }
 
   async function applyAutoSegMask(key) {
+    // A fresh wall mask invalidates the copy the skirting cut was based on
+    if (key === 'wall') skirtWallBackup = null;
     const info = autoSegMasks[key];
     if (!info) return;
 
