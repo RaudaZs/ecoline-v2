@@ -1563,7 +1563,7 @@ const UploadTool = (() => {
 
       const band = Math.max(3, Math.round(h * 0.014));
       drawSkirting(band, 0);
-      showSkirtingSliders(band, 2, Math.round(h * 0.045));
+      showSkirtingSliders(band, 2, Math.round(h * 0.12));
 
     } catch (err) {
       console.error('[Skirting]', err);
@@ -1669,7 +1669,7 @@ const UploadTool = (() => {
     };
 
     box.appendChild(row('Қалыңдық', minB, maxB, band, v => { curBand = v; drawSkirting(curBand, curShift); }));
-    box.appendChild(row('Жылжыту', -40, 40, 0, v => { curShift = v; drawSkirting(curBand, curShift); }));
+    box.appendChild(row('Жылжыту', -80, 80, 0, v => { curShift = v; drawSkirting(curBand, curShift); }));
 
     els.autoSegBar.appendChild(box);
     els.autoSegStatus.textContent = '✅ Плинтус — слайдермен реттеңіз';
