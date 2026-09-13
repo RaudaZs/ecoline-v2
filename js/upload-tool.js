@@ -1781,17 +1781,25 @@ const UploadTool = (() => {
       const scaled = document.createElement('canvas');
       scaled.width = w; scaled.height = h;
       const sCtx = scaled.getContext('2d', { willReadFrequently: true });
+
+      /* The mask comes back at 640px, so blowing it up to the photo's size
+         leaves a staircase along every edge. Blurring by roughly the scale
+         factor turns those steps back into a straight line before the
+         threshold below snaps it to hard pixels. */
+      const scaleUp = w / (maskImg.naturalWidth || w);
+      const blurPx = Math.min(6, Math.max(0, (scaleUp - 1) * 1.2));
+      if (blurPx > 0.3) sCtx.filter = `blur(${blurPx.toFixed(1)}px)`;
       sCtx.drawImage(maskImg, 0, 0, w, h);
+      sCtx.filter = 'none';
       if (blobUrl) URL.revokeObjectURL(blobUrl);
 
       // Threshold + write (bright pixels = segmented area)
       const sData = sCtx.getImageData(0, 0, w, h);
       const mData = mCtx.createImageData(w, h);
 
-      /* The model works at 640px and the mask is stretched to the photo's
-         full size, which smears every edge outward. A higher cutoff pulls
-         the boundary back to where the object actually ends. */
-      const EDGE = 190;
+      /* After the blur the edge is a soft ramp; 150 sits just inside the
+         object, which keeps the wall from creeping onto the door frame. */
+      const EDGE = 150;
 
       for (let i = 0; i < sData.data.length; i += 4) {
         const bright = sData.data[i] > EDGE || sData.data[i + 1] > EDGE || sData.data[i + 2] > EDGE;
