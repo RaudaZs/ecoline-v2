@@ -1477,9 +1477,93 @@ const UploadTool = (() => {
     els.autoSegBar.appendChild(picker);
   }
 
+  /* The model's boundary is approximate: it lands within a few pixels of
+     where the wall really meets the ceiling. The photo knows better — there
+     is a real brightness step at that line. For each column we look a short
+     distance above and below the mask edge, find the strongest step, and
+     move the edge there. Closer candidates are favoured so a distant, even
+     stronger edge (a picture frame, say) doesn't drag the line away. */
+  function snapMaskToPhotoEdges(mData, photo, w, h) {
+    const R = Math.max(4, Math.round(h * 0.02));
+
+    const lum = (x, y) => {
+      const p = (y * w + x) * 4;
+      return (photo[p] * 299 + photo[p + 1] * 587 + photo[p + 2] * 114) / 1000;
+    };
+
+    const findEdge = (fromTop) => {
+      const raw = new Int32Array(w).fill(-1);
+      for (let x = 0; x < w; x++) {
+        if (fromTop) {
+          for (let y = 0; y < h; y++) if (mData[(y * w + x) * 4 + 3] > 0) { raw[x] = y; break; }
+        } else {
+          for (let y = h - 1; y >= 0; y--) if (mData[(y * w + x) * 4 + 3] > 0) { raw[x] = y; break; }
+        }
+      }
+
+      const snapped = new Int32Array(w).fill(-1);
+      for (let x = 0; x < w; x++) {
+        const e = raw[x];
+        if (e <= R || e >= h - R - 1) { snapped[x] = e; continue; }
+        let best = e, bestScore = 0;
+        for (let d = -R; d <= R; d++) {
+          const y = e + d;
+          const step = Math.abs(lum(x, y + 1) - lum(x, y - 1));
+          const near = 1 - Math.abs(d) / (R + 1) * 0.45;
+          const score = step * near;
+          if (score > bestScore) { bestScore = score; best = y; }
+        }
+        // Ignore a flat area — no real edge to snap to
+        snapped[x] = bestScore > 6 ? best : e;
+      }
+
+      // Median smoothing keeps the line straight across noisy columns
+      const out = Int32Array.from(snapped);
+      const RS = Math.max(2, Math.round(w * 0.008));
+      const buf = [];
+      for (let x = 0; x < w; x++) {
+        if (snapped[x] < 0) continue;
+        buf.length = 0;
+        for (let k = -RS; k <= RS; k++) {
+          const v = snapped[x + k];
+          if (v !== undefined && v >= 0) buf.push(v);
+        }
+        if (buf.length < 3) continue;
+        buf.sort((a, b) => a - b);
+        out[x] = buf[buf.length >> 1];
+      }
+      return { raw, out };
+    };
+
+    const top = findEdge(true);
+    const bot = findEdge(false);
+
+    // Redraw each column between its corrected top and bottom
+    for (let x = 0; x < w; x++) {
+      if (top.raw[x] < 0) continue;
+      const t = top.out[x], b = bot.out[x];
+      if (t < 0 || b < 0 || b <= t) continue;
+      for (let y = 0; y < h; y++) {
+        const p = (y * w + x) * 4;
+        const inside = y >= t && y <= b;
+        const wasInside = mData[p + 3] > 0;
+        // Only fill gaps the original mask also covered somewhere in between,
+        // so holes (a door inside the wall) stay holes
+        if (inside && !wasInside) {
+          const nearEdge = y < top.raw[x] || y > bot.raw[x];
+          if (!nearEdge) continue;
+        }
+        const v = inside ? 255 : 0;
+        mData[p] = v; mData[p + 1] = v; mData[p + 2] = v;
+        mData[p + 3] = inside ? 255 : 0;
+      }
+    }
+  }
+
   // ===== SKIRTING (geometric, no model call) =====
   let skirtEdge = null, skirtW = 0, skirtH = 0;
   let skirtDoor = null;   // door mask, so the strip skips door frames
+  let skirtWall = null;   // wall mask, so the strip stays behind furniture
   let skirtWallBackup = null;  // pristine wall layer, re-cut on every slider move
   let skirtBand = 0, skirtShift = 0;  // current slider values, for re-cutting
 
@@ -1497,6 +1581,7 @@ const UploadTool = (() => {
       const wCtx = wc.getContext('2d', { willReadFrequently: true });
       wCtx.drawImage(wallImg, 0, 0, w, h);
       const wData = wCtx.getImageData(0, 0, w, h).data;
+      skirtWall = wData;
 
       /* A door frame reaches the floor too, so without this the strip would
          run straight across the bottom of the door. */
@@ -1586,6 +1671,9 @@ const UploadTool = (() => {
       for (let y = from; y < bot; y++) {
         const p = (y * w + x) * 4;
         if (skirtDoor && skirtDoor[p] > 128) continue;   // door frame
+        /* Anything standing in front of the wall — a chair, a plant pot —
+           isn't part of the wall mask, and the skirting runs behind it. */
+        if (skirtWall && skirtWall[p] <= 128) continue;
         out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
         painted++;
       }
@@ -1834,6 +1922,15 @@ const UploadTool = (() => {
         } catch (e) {
           console.warn('[AutoSeg] neighbour mask skipped:', nk, e.message);
         }
+      }
+
+      /* Snap the boundary to the real edge in the photo. Only for the big
+         flat surfaces — a door or window has its own frame and the model
+         already tracks those tightly. */
+      if (key === 'wall' || key === 'ceiling' || key === 'floor') {
+        const photo = els.canvasBase.getContext('2d', { willReadFrequently: true })
+          .getImageData(0, 0, w, h).data;
+        snapMaskToPhotoEdges(mData.data, photo, w, h);
       }
 
       mCtx.putImageData(mData, 0, 0);
