@@ -1465,12 +1465,16 @@ const UploadTool = (() => {
         picker.appendChild(btn);
       }
       /* Skirting isn't a class any model knows — it's derived from the
-         bottom edge of the wall mask, where a skirting board always sits. */
-      if (autoSegMasks.wall) {
+         bottom edge of the surface mask, where the board always sits.
+         Outdoors the same geometry gives the socle at the base of a house. */
+      const baseKey = ['wall', 'building', 'house', 'skyscraper', 'hovel']
+        .find(k => autoSegMasks[k]);
+      if (baseKey) {
+        const outdoor = baseKey !== 'wall';
         const sk = document.createElement('button');
-        sk.textContent = 'Плинтус';
+        sk.textContent = outdoor ? 'Цоколь' : 'Плинтус';
         sk.style.cssText = 'background:#ec4899;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;';
-        sk.addEventListener('click', () => buildSkirting());
+        sk.addEventListener('click', () => buildSkirting(baseKey, outdoor));
         picker.appendChild(sk);
       }
     }
@@ -1566,16 +1570,19 @@ const UploadTool = (() => {
   let skirtWall = null;   // wall mask, so the strip stays behind furniture
   let skirtWallBackup = null;  // pristine wall layer, re-cut on every slider move
   let skirtBand = 0, skirtShift = 0;  // current slider values, for re-cutting
+  let skirtName = 'Плинтус', skirtBaseKey = 'wall';
 
-  async function buildSkirting() {
-    if (!autoSegMasks.wall) return;
-    els.autoSegStatus.textContent = '⏳ Плинтус есептелуде...';
+  async function buildSkirting(baseKey, outdoor) {
+    skirtBaseKey = baseKey || 'wall';
+    skirtName = outdoor ? 'Цоколь' : 'Плинтус';
+    if (!autoSegMasks[skirtBaseKey]) return;
+    els.autoSegStatus.textContent = `⏳ ${skirtName} есептелуде...`;
 
     try {
       const w = els.canvasBase.width, h = els.canvasBase.height;
       skirtW = w; skirtH = h;
 
-      const wallImg = await loadMaskImage(autoSegMasks.wall.maskUrl);
+      const wallImg = await loadMaskImage(autoSegMasks[skirtBaseKey].maskUrl);
       const wc = document.createElement('canvas');
       wc.width = w; wc.height = h;
       const wCtx = wc.getContext('2d', { willReadFrequently: true });
@@ -1609,7 +1616,7 @@ const UploadTool = (() => {
          frame and run roughly level. Columns above a doorway report the top
          of the door frame as their "bottom" — drop those. */
       const valid = Array.from(bottoms).filter(v => v > 0).sort((a, b) => a - b);
-      if (!valid.length) { els.autoSegStatus.textContent = '⚠ Қабырға шекарасы табылмады'; return; }
+      if (!valid.length) { els.autoSegStatus.textContent = '⚠ Шекара табылмады'; return; }
       const floorLine = valid[Math.floor(valid.length * 0.75)];
       const tolerance = h * 0.15;
       for (let x = 0; x < w; x++) {
@@ -1680,11 +1687,11 @@ const UploadTool = (() => {
     }
     if (painted < 50) return;
 
-    let idx = state.masks.findIndex(mk => mk.name === 'Плинтус');
+    let idx = state.masks.findIndex(mk => mk.name === skirtName);
     if (idx === -1) {
       const empty = findEmptyLayerIndex();
       if (empty !== -1) {
-        state.masks[empty].name = 'Плинтус';
+        state.masks[empty].name = skirtName;
         state.masks[empty].color = '#ec4899';
         idx = empty;
       } else {
@@ -1692,7 +1699,7 @@ const UploadTool = (() => {
           alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
           return;
         }
-        state.masks.push({ name: 'Плинтус', canvas: createMaskCanvas(w, h), color: '#ec4899' });
+        state.masks.push({ name: skirtName, canvas: createMaskCanvas(w, h), color: '#ec4899' });
         idx = state.masks.length - 1;
       }
       saveUndoState();
@@ -1706,7 +1713,8 @@ const UploadTool = (() => {
     /* Cut the strip out of the wall layer, so the two never share pixels.
        Re-cut from a pristine copy each time, otherwise dragging the slider
        would eat further into the wall on every move. */
-    const wallIdx = state.masks.findIndex(mk => mk.name === 'Қабырға');
+    const baseName = SEG_LABELS[skirtBaseKey] ? SEG_LABELS[skirtBaseKey].label : 'Қабырға';
+    const wallIdx = state.masks.findIndex(mk => mk.name === baseName);
     if (wallIdx !== -1) {
       const wlCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
       if (!skirtWallBackup) {
@@ -1760,7 +1768,7 @@ const UploadTool = (() => {
     box.appendChild(row('Жылжыту', -80, 80, 0, v => { curShift = v; drawSkirting(curBand, curShift); }));
 
     els.autoSegBar.appendChild(box);
-    els.autoSegStatus.textContent = '✅ Плинтус — слайдермен реттеңіз';
+    els.autoSegStatus.textContent = `✅ ${skirtName} — слайдермен реттеңіз`;
   }
 
 
@@ -1786,7 +1794,7 @@ const UploadTool = (() => {
 
   async function applyAutoSegMask(key) {
     // A fresh wall mask invalidates the copy the skirting cut was based on
-    if (key === 'wall') skirtWallBackup = null;
+    if (key === skirtBaseKey) skirtWallBackup = null;
     const info = autoSegMasks[key];
     if (!info) return;
 
@@ -1937,7 +1945,7 @@ const UploadTool = (() => {
 
       /* A fresh wall mask covers the skirting area again, so re-apply the
          cut with the slider values the user already settled on. */
-      if (key === 'wall' && skirtEdge && skirtBand > 0) {
+      if (key === skirtBaseKey && skirtEdge && skirtBand > 0) {
         drawSkirting(skirtBand, skirtShift);
         state.activeMaskIndex = targetIndex;
       }
