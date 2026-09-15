@@ -665,6 +665,10 @@ function repaintAll(){
     var lutR=new Uint8Array(256),lutG=new Uint8Array(256),lutB=new Uint8Array(256);
     for(var v=0;v<256;v++){
       var nL=cL+(v/255-mean)*TEXTURE;
+      /* Near white or black a hue stops being readable, so ease off there
+         instead of letting bright spots wash a light shade out to paper. */
+      if(nL>0.88)nL=0.88+(nL-0.88)*0.28;
+      else if(nL<0.07)nL=0.07-(0.07-nL)*0.28;
       if(nL<0)nL=0;else if(nL>1)nL=1;
       var o=hsl2rgb(cH,cS,nL);
       lutR[v]=o[0];lutG[v]=o[1];lutB[v]=o[2];
