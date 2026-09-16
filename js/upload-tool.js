@@ -2032,7 +2032,7 @@ const UploadTool = (() => {
      into a pixel mask. Works on anything the model can name, so it covers
      roofs, socles and other things ADE20K has no class for. */
   const TEXT_SEG_CHIPS = [
-    { prompt: 'roof',                        neg: 'sky, wall, tree',      label: 'Шатыр',   color: '#f97316', max: 0.55 },
+    { prompt: 'roof of the house, rooftop',  neg: 'sky, tree, grass, ground, wall, window', label: 'Шатыр',   color: '#f97316', max: 0.40 },
     { prompt: 'basement, socle, foundation', neg: 'wall, window, ground', label: 'Цоколь',  color: '#78716c', max: 0.35 },
     { prompt: 'facade wall',                 neg: 'sky, roof, window',    label: 'Фасад',   color: '#0ea5e9', max: 0.85 },
     { prompt: 'window',                      neg: 'wall',                 label: 'Терезе',  color: '#06b6d4', max: 0.40 },
