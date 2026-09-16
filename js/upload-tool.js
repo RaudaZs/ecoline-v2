@@ -1623,6 +1623,7 @@ const UploadTool = (() => {
 
     els.btnQuickRoom.disabled = true;
     els.btnQuickFacade.disabled = true;
+    let roofFailed = false;
     const step = (t) => { els.quickProgress.textContent = t; };
 
     try {
@@ -1654,8 +1655,20 @@ const UploadTool = (() => {
         step('⏳ Шатыр...');
         const roof = TEXT_SEG_CHIPS.find(c => c.label === 'Шатыр');
         try {
-          await runTextSegment(roof.prompt, roof.label, roof.neg, roof.max, { silent: true });
-        } catch (e) { console.warn('[Quick] roof skipped', e); }
+          const res = await runTextSegment(roof.prompt, roof.label, roof.neg, roof.max, { silent: true });
+          /* A roof that fills half the frame isn't a roof — the model found
+             the sky or the trees. Better to leave the layer empty than to
+             hand back a wrong one the person then has to undo. */
+          if (res && res.share > roof.max) {
+            const m = state.masks[res.idx];
+            if (m) {
+              m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
+              m.name = '';
+            }
+            roofFailed = true;
+            console.log(`[Quick] roof rejected — ${(res.share * 100).toFixed(0)}% of frame`);
+          }
+        } catch (e) { roofFailed = true; console.warn('[Quick] roof skipped', e); }
 
         if (baseKey) {
           step('⏳ Цоколь...');
@@ -1671,7 +1684,12 @@ const UploadTool = (() => {
       }
 
       const names = state.masks.filter(m => m.name).map(m => m.name);
-      step(`✅ Дайын: ${names.join(' · ')}`);
+      if (roofFailed) {
+        step(`✅ ${names.join(' · ')} — шатырды «Қолмен реттеу» арқылы қосыңыз`);
+        advancedOpen = true; applyAdvancedVisibility(false);
+      } else {
+        step(`✅ Дайын: ${names.join(' · ')}`);
+      }
 
     } catch (err) {
       console.error('[Quick] Error:', err);
@@ -2223,7 +2241,7 @@ const UploadTool = (() => {
 
       // This model returns an INVERTED mask (object is black, rest is white),
       // so flip it by default. The button lets you switch back if needed.
-      await applyTextMask(maskUrl, label, maxShare, true);
+      return await applyTextMask(maskUrl, label, maxShare, true);
 
     } catch (err) {
       console.error('[TextSeg] Error:', err);
@@ -2331,6 +2349,7 @@ const UploadTool = (() => {
       els.textSegStatus.textContent = `✅ ${label} → ${pct}%`;
       showInvertButton(label);
     }
+    return { share, idx };
   }
 
   function showInvertButton(label) {
