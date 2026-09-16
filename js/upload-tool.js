@@ -2163,6 +2163,16 @@ const UploadTool = (() => {
       mData.data[i + 3] = bright ? 255 : 0;
       if (bright) on++;
     }
+    const share = on / (w * h);
+
+    /* The model usually returns an inverted mask, so we flip by default —
+       but not always. If the result swallows almost the whole frame it was
+       the other way round; flip back rather than make the user notice. */
+    if (share > 0.85 && forceInvert) {
+      console.log(`[TextSeg] "${label}" covered ${(share * 100).toFixed(0)}% — flipping back`);
+      return applyTextMask(maskUrl, label, maxShare, false);
+    }
+
     mCtx.putImageData(mData, 0, 0);
 
     /* Carve this surface out of any broad layer underneath — a facade mask
@@ -2190,7 +2200,6 @@ const UploadTool = (() => {
 
     lastTextMask = { img: maskImg, label, maxShare, inverted: !!forceInvert };
 
-    const share = on / (w * h);
     const pct = (share * 100).toFixed(1);
     console.log(`[TextSeg] Applied "${label}" to layer #${idx} — ${pct}% of image`);
 
