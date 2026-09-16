@@ -1324,9 +1324,9 @@ const UploadTool = (() => {
     floor:   { label: 'Еден',    btnColor: '#10b981' },
     // Exterior — ADE20K has no separate roof or socle class,
     // so the model returns the house as one piece. Refine with SAM.
-    building: { label: 'Үй',      btnColor: '#0ea5e9' },
-    house:    { label: 'Ғимарат', btnColor: '#14b8a6' },
-    skyscraper: { label: 'Ғимарат', btnColor: '#14b8a6' },
+    building: { label: 'Фасад',   btnColor: '#0ea5e9' },
+    house:    { label: 'Фасад',   btnColor: '#0ea5e9' },
+    skyscraper: { label: 'Фасад', btnColor: '#0ea5e9' },
     hovel:    { label: 'Құрылыс', btnColor: '#84cc16' },
     fence:    { label: 'Қоршау',  btnColor: '#a855f7' },
     door:     { label: 'Есік',    btnColor: '#f43f5e' },
@@ -1624,7 +1624,7 @@ const UploadTool = (() => {
       }
 
       // Median smoothing — the mask edge is jagged at this scale
-      const R = Math.max(2, Math.round(w * 0.012));
+      const R = Math.max(3, Math.round(w * 0.035));
       const sm = new Int32Array(w).fill(-1);
       const buf = [];
       for (let x = 0; x < w; x++) {
@@ -1636,6 +1636,35 @@ const UploadTool = (() => {
         if (buf.length < 3) continue;
         buf.sort((a, b) => a - b);
         sm[x] = buf[buf.length >> 1];
+      }
+
+      /* Grass, shadows and paving stones nibble at the mask's lower edge,
+         leaving a wavy line where the real base of the wall is straight.
+         Fit a line through the smoothed points and pull outliers onto it. */
+      let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (let x = 0; x < w; x++) {
+        if (sm[x] <= 0) continue;
+        n++; sx += x; sy += sm[x]; sxx += x * x; sxy += x * sm[x];
+      }
+      if (n > w * 0.3) {
+        const denom = n * sxx - sx * sx;
+        if (Math.abs(denom) > 1e-6) {
+          const slope = (n * sxy - sx * sy) / denom;
+          const icpt = (sy - slope * sx) / n;
+          // Average distance from the fitted line tells us how wavy it is
+          let dev = 0, dn = 0;
+          for (let x = 0; x < w; x++) {
+            if (sm[x] <= 0) continue;
+            dev += Math.abs(sm[x] - (slope * x + icpt)); dn++;
+          }
+          const mad = dev / Math.max(1, dn);
+          const pull = Math.min(0.85, mad / (h * 0.02));
+          for (let x = 0; x < w; x++) {
+            if (sm[x] <= 0) continue;
+            const fit = slope * x + icpt;
+            sm[x] = Math.round(sm[x] * (1 - pull) + fit * pull);
+          }
+        }
       }
 
       // Bridge gaps left by furniture or doorways
@@ -1941,6 +1970,25 @@ const UploadTool = (() => {
         snapMaskToPhotoEdges(mData.data, photo, w, h);
       }
 
+      /* A facade mask covers the whole house — roof, windows and all. Any
+         surface already split into its own layer keeps its pixels, so the
+         order of work doesn't matter: split the roof first or last, the
+         facade never swallows it. */
+      const BROAD = ['wall', 'building', 'house', 'skyscraper', 'ceiling', 'floor'];
+      if (BROAD.includes(key)) {
+        for (let li = 0; li < state.masks.length; li++) {
+          if (li === targetIndex) continue;
+          const other = state.masks[li].canvas.getContext('2d', { willReadFrequently: true })
+            .getImageData(0, 0, w, h).data;
+          for (let i = 3; i < mData.data.length; i += 4) {
+            if (mData.data[i] > 0 && other[i] > 0) {
+              mData.data[i - 3] = 0; mData.data[i - 2] = 0;
+              mData.data[i - 1] = 0; mData.data[i] = 0;
+            }
+          }
+        }
+      }
+
       mCtx.putImageData(mData, 0, 0);
 
       /* A fresh wall mask covers the skirting area again, so re-apply the
@@ -2116,6 +2164,25 @@ const UploadTool = (() => {
       if (bright) on++;
     }
     mCtx.putImageData(mData, 0, 0);
+
+    /* Carve this surface out of any broad layer underneath — a facade mask
+       covers the whole building, so a roof split out afterwards would
+       otherwise sit on pixels that layer still claims. */
+    const BROAD_NAMES = ['Фасад', 'Қабырға', 'Құрылыс', 'Төбе', 'Еден'];
+    for (let li = 0; li < state.masks.length; li++) {
+      if (li === idx || !BROAD_NAMES.includes(state.masks[li].name)) continue;
+      const bCtx = state.masks[li].canvas.getContext('2d', { willReadFrequently: true });
+      const bImg = bCtx.getImageData(0, 0, w, h);
+      let changed = false;
+      for (let i = 3; i < mData.data.length; i += 4) {
+        if (mData.data[i] > 0 && bImg.data[i] > 0) {
+          bImg.data[i - 3] = 0; bImg.data[i - 2] = 0;
+          bImg.data[i - 1] = 0; bImg.data[i] = 0;
+          changed = true;
+        }
+      }
+      if (changed) bCtx.putImageData(bImg, 0, 0);
+    }
 
     renderLayers();
     renderMaskOverlay();
