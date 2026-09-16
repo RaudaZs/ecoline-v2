@@ -179,6 +179,16 @@ const UploadTool = (() => {
             <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
+          <!-- One-tap analysis. This is what most people will use. -->
+          <div class="quick-bar hidden" id="quick-bar" style="display:none;flex-direction:column;gap:10px;padding:14px;background:rgba(45,106,79,0.12);border-radius:12px;margin-bottom:10px">
+            <div style="display:flex;gap:8px">
+              <button id="btn-quick-room" style="flex:1;background:#2D6A4F;padding:14px 12px;font-size:14px;border-radius:10px;border:none;color:#fff;font-weight:600;cursor:pointer;line-height:1.3">🛋 Бөлмені талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">қабырға · төбе · еден</span></button>
+              <button id="btn-quick-facade" style="flex:1;background:#0ea5e9;padding:14px 12px;font-size:14px;border-radius:10px;border:none;color:#fff;font-weight:600;cursor:pointer;line-height:1.3">🏠 Фасадты талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">фасад · шатыр · цоколь</span></button>
+            </div>
+            <div id="quick-progress" style="color:#86efac;font-size:12px;min-height:16px"></div>
+            <button id="btn-toggle-advanced" style="background:none;border:none;color:rgba(255,255,255,.45);font-size:11px;cursor:pointer;padding:2px;text-align:left">Қолмен реттеу ▾</button>
+          </div>
+
           <!-- Auto-segment button -->
           <div class="auto-seg-bar hidden" id="auto-seg-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(124,58,237,0.1);border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
             <button class="sam-run-btn" id="btn-auto-segment" style="background:#7c3aed;padding:7px 16px;font-size:13px;border-radius:7px;border:none;color:#fff;font-weight:600;cursor:pointer">🔮 Авто сегмент</button>
@@ -346,6 +356,12 @@ const UploadTool = (() => {
       // Auto-segment
       autoSegBar: modal.querySelector('#auto-seg-bar'),
       btnAutoSegment: modal.querySelector('#btn-auto-segment'),
+      // One-tap mode
+      quickBar: modal.querySelector('#quick-bar'),
+      btnQuickRoom: modal.querySelector('#btn-quick-room'),
+      btnQuickFacade: modal.querySelector('#btn-quick-facade'),
+      quickProgress: modal.querySelector('#quick-progress'),
+      btnToggleAdvanced: modal.querySelector('#btn-toggle-advanced'),
       autoSegStatus: modal.querySelector('#auto-seg-status'),
       // Text-prompt segmentation
       textSegBar: modal.querySelector('#text-seg-bar'),
@@ -399,6 +415,11 @@ const UploadTool = (() => {
     els.samBtnUndoPoint.addEventListener('click', undoSamPoint);
     els.samBtnClearPoints.addEventListener('click', clearSamPoints);
     els.samBtnRun.addEventListener('click', runSamSegmentation);
+
+    // One-tap analysis
+    els.btnQuickRoom.addEventListener('click', () => runQuickAnalysis('room'));
+    els.btnQuickFacade.addEventListener('click', () => runQuickAnalysis('facade'));
+    els.btnToggleAdvanced.addEventListener('click', toggleAdvanced);
 
     // Auto-segment
     els.btnAutoSegment.addEventListener('click', runAutoSegment);
@@ -505,14 +526,34 @@ const UploadTool = (() => {
 
     // Show auto-segment bar (only online)
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    els.autoSegBar.classList.toggle('hidden', isLocal);
-    els.autoSegBar.style.display = isLocal ? 'none' : 'flex';
-    els.autoSegStatus.textContent = '';
 
-    els.textSegBar.classList.toggle('hidden', isLocal);
-    els.textSegBar.style.display = isLocal ? 'none' : 'flex';
+    /* Most people want one button and a finished result. The per-surface
+       tools stay a click away for anyone who wants to correct something. */
+    els.quickBar.classList.toggle('hidden', isLocal);
+    els.quickBar.style.display = isLocal ? 'none' : 'flex';
+    els.quickProgress.textContent = '';
+    advancedOpen = false;
+    applyAdvancedVisibility(isLocal);
+
+    els.autoSegStatus.textContent = '';
     els.textSegStatus.textContent = '';
     renderTextSegChips();
+  }
+
+  let advancedOpen = false;
+
+  function applyAdvancedVisibility(isLocal) {
+    const show = advancedOpen && !isLocal;
+    els.autoSegBar.classList.toggle('hidden', !show);
+    els.autoSegBar.style.display = show ? 'flex' : 'none';
+    els.textSegBar.classList.toggle('hidden', !show);
+    els.textSegBar.style.display = show ? 'flex' : 'none';
+    els.btnToggleAdvanced.textContent = show ? 'Қолмен реттеу ▴' : 'Қолмен реттеу ▾';
+  }
+
+  function toggleAdvanced() {
+    advancedOpen = !advancedOpen;
+    applyAdvancedVisibility(false);
   }
 
   function createMaskCanvas(w, h) {
@@ -1335,7 +1376,8 @@ const UploadTool = (() => {
   };
   let autoSegMasks = {};
 
-  async function runAutoSegment() {
+  async function runAutoSegment(opts) {
+    const quiet = opts && opts.silent;
     if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
 
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -1425,17 +1467,21 @@ const UploadTool = (() => {
       const isFacade = ['building', 'house', 'skyscraper', 'hovel']
         .some(k => autoSegMasks[k]);
 
-      if (isFacade) {
-        els.autoSegStatus.textContent = 'ℹ️ Шатыр мен цоколь үшін SAM нүктелерін қолданыңыз';
-      } else {
-        els.autoSegStatus.textContent = '✅ Дайын!';
+      if (!quiet) {
+        els.autoSegStatus.textContent = isFacade
+          ? 'ℹ️ Шатыр мен цоколь үшін SAM нүктелерін қолданыңыз'
+          : '✅ Дайын!';
       }
       els.btnAutoSegment.textContent = '🔮 Қайта сегмент';
 
     } catch (err) {
       console.error('[AutoSeg] Error:', err);
-      alert('Авто-сегменттеу қатесі: ' + err.message);
-      els.autoSegStatus.textContent = '❌ Қате';
+      if (!quiet) {
+        alert('Авто-сегменттеу қатесі: ' + err.message);
+        els.autoSegStatus.textContent = '❌ Қате';
+      } else {
+        throw err;
+      }
     } finally {
       els.btnAutoSegment.disabled = false;
     }
@@ -1561,6 +1607,78 @@ const UploadTool = (() => {
         mData[p] = v; mData[p + 1] = v; mData[p + 2] = v;
         mData[p + 3] = inside ? 255 : 0;
       }
+    }
+  }
+
+  // ===== ONE-TAP ANALYSIS =====
+  /* Runs the whole pipeline behind a single button: segment the photo,
+     split each surface into its own layer, then stop. Everything here is
+     already available separately in the advanced panels — this just does
+     it in the right order so the person doesn't have to know that order. */
+  async function runQuickAnalysis(mode) {
+    if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
+
+    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+    if (isLocal) { alert('Талдау тек онлайн нұсқада жұмыс істейді (Vercel).'); return; }
+
+    els.btnQuickRoom.disabled = true;
+    els.btnQuickFacade.disabled = true;
+    const step = (t) => { els.quickProgress.textContent = t; };
+
+    try {
+      step('⏳ Суретті талдау...');
+      await runAutoSegment({ silent: true });
+
+      const found = Object.keys(autoSegMasks);
+      if (!found.length) {
+        step('⚠ Беткей табылмады. Қолмен реттеп көріңіз.');
+        advancedOpen = true; applyAdvancedVisibility(false);
+        return;
+      }
+
+      if (mode === 'room') {
+        for (const key of ['wall', 'ceiling', 'floor']) {
+          if (!autoSegMasks[key]) continue;
+          step(`⏳ ${SEG_LABELS[key].label}...`);
+          await applyAutoSegMask(key);
+        }
+      } else {
+        const baseKey = ['building', 'house', 'skyscraper', 'wall', 'hovel']
+          .find(k => autoSegMasks[k]);
+        if (baseKey) {
+          step('⏳ Фасад...');
+          await applyAutoSegMask(baseKey);
+        }
+
+        // The model has no roof class, so ask for it by name
+        step('⏳ Шатыр...');
+        const roof = TEXT_SEG_CHIPS.find(c => c.label === 'Шатыр');
+        try {
+          await runTextSegment(roof.prompt, roof.label, roof.neg, roof.max, { silent: true });
+        } catch (e) { console.warn('[Quick] roof skipped', e); }
+
+        if (baseKey) {
+          step('⏳ Цоколь...');
+          await buildSkirting(baseKey, baseKey !== 'wall');
+        }
+      }
+
+      // Windows and doors, if the model found them
+      for (const key of ['windowpane', 'door']) {
+        if (!autoSegMasks[key]) continue;
+        step(`⏳ ${SEG_LABELS[key].label}...`);
+        await applyAutoSegMask(key);
+      }
+
+      const names = state.masks.filter(m => m.name).map(m => m.name);
+      step(`✅ Дайын: ${names.join(' · ')}`);
+
+    } catch (err) {
+      console.error('[Quick] Error:', err);
+      step('❌ Қате: ' + err.message);
+    } finally {
+      els.btnQuickRoom.disabled = false;
+      els.btnQuickFacade.disabled = false;
     }
   }
 
@@ -2051,7 +2169,8 @@ const UploadTool = (() => {
     });
   }
 
-  async function runTextSegment(prompt, label, negPrompt, maxShare) {
+  async function runTextSegment(prompt, label, negPrompt, maxShare, opts) {
+    const quiet = opts && opts.silent;
     if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
 
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
@@ -2108,6 +2227,7 @@ const UploadTool = (() => {
 
     } catch (err) {
       console.error('[TextSeg] Error:', err);
+      if (quiet) throw err;
       els.textSegStatus.textContent = '❌ ' + err.message;
     } finally {
       els.btnTextSegment.disabled = false;
