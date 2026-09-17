@@ -494,6 +494,7 @@ function renderRooms(){
 }
 
 async function selectRoom(room){
+  track('room_selected',{room:room&&room.id?room.id:String(room)});
   selRoom=room;selLayer=null;layerColors={};maskCache={};
   renderRooms();renderLayers(room);
   document.getElementById('surfSec').style.display='flex';
@@ -601,7 +602,12 @@ function pickColor(c){
 }
 
 /* ══════ PAINT ══════ */
-function applyPaint(){if(!selLayer||!selColor)return;layerColors[selLayer.id]={hex:selColor.hex,code:selColor.code};repaintAll();renderLayers(selRoom)}
+function applyPaint(){
+  if(!selLayer||!selColor)return;
+  layerColors[selLayer.id]={hex:selColor.hex,code:selColor.code};
+  repaintAll();renderLayers(selRoom);
+  track('paint_applied',{color:selColor.code,surface:selLayer.name||selLayer.id});
+}
 /* HSL түрлендіру көмекшілері */
 function rgb2hsl(r,g,b){
   r/=255;g/=255;b/=255;
@@ -698,6 +704,7 @@ function resetAll(){
 /* ══════ DOWNLOAD CARD ══════ */
 function downloadImg(){
   var src=document.getElementById('mainCanvas');if(!src.width||!selRoom)return;
+  track('download',{room:selRoom.id,colors:Object.values(layerColors).map(function(c){return c.code}).join(',')});
   var cW=700,pH=Math.round(cW*(src.height/src.width)),painted=Object.entries(layerColors);
   var iH=painted.length>0?80+painted.length*52+40:80;
   var card=document.createElement('canvas');card.width=cW;card.height=pH+iH;
@@ -911,5 +918,22 @@ window.addEventListener('ecoline:custom-room',function(e){
 init();
 </script>
 <script src="js/upload-tool.js"></script>
+<script>
+/* Vercel Web Analytics — pageviews and referrers, no cookies, no banner.
+   Enable it in the Vercel dashboard (Project → Analytics) for data to land. */
+window.va = window.va || function () { (window.vaq = window.vaq || []).push(arguments); };
+</script>
+<script defer src="/_vercel/insights/script.js"></script>
+<script>
+/* Product events. Which surfaces people paint and which colours they pick
+   is the part worth knowing — pageviews alone don't say whether the tool
+   actually helped anyone choose. */
+window.track = function (name, props) {
+  try {
+    if (window.va) window.va('event', { name: name, data: props || {} });
+    console.log('[track]', name, props || '');
+  } catch (e) { /* analytics must never break the app */ }
+};
+</script>
 </body>
 </html>

@@ -521,6 +521,7 @@ const UploadTool = (() => {
     }];
     state.activeMaskIndex = 0;
     state.undoStack = [];
+    if (window.track) track('photo_uploaded', {});
     renderLayers();
     updateApplyButton();
 
@@ -1623,6 +1624,8 @@ const UploadTool = (() => {
 
     els.btnQuickRoom.disabled = true;
     els.btnQuickFacade.disabled = true;
+    const t0 = Date.now();
+    if (window.track) track('analysis_start', { mode });
     let roofFailed = false;
     const step = (t) => { els.quickProgress.textContent = t; };
 
@@ -1684,6 +1687,10 @@ const UploadTool = (() => {
       }
 
       const names = state.masks.filter(m => m.name).map(m => m.name);
+      if (window.track) track('analysis_done', {
+        mode, surfaces: names.join(','), seconds: Math.round((Date.now() - t0) / 1000),
+        roof_failed: roofFailed ? 1 : 0
+      });
       if (roofFailed) {
         step(`✅ ${names.join(' · ')} — шатырды «Қолмен реттеу» арқылы қосыңыз`);
         advancedOpen = true; applyAdvancedVisibility(false);
@@ -1693,6 +1700,7 @@ const UploadTool = (() => {
 
     } catch (err) {
       console.error('[Quick] Error:', err);
+      if (window.track) track('analysis_failed', { mode, error: String(err.message).slice(0, 80) });
       step('❌ Қате: ' + err.message);
     } finally {
       els.btnQuickRoom.disabled = false;
