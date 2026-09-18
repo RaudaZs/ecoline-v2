@@ -1687,19 +1687,22 @@ const UploadTool = (() => {
       }
 
       /* On a facade the model often misses the windows, and then they get
-         painted along with the wall. Ask for them by name as a fallback. */
+         painted along with the wall. Ask for them by name, use the mask to
+         carve the facade, then drop the layer — nobody paints their glass,
+         and a layer slot is better spent on a surface that gets colour. */
       if (mode === 'facade' && !autoSegMasks.windowpane) {
         step('⏳ Терезе...');
         const win = TEXT_SEG_CHIPS.find(c => c.label === 'Терезе');
         try {
           const res = await runTextSegment(win.prompt, win.label, win.neg, win.max, { silent: true });
-          if (res && res.share > win.max) {
+          if (res) {
             const m = state.masks[res.idx];
             if (m) {
               m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
               m.name = '';
             }
-            console.log(`[Quick] windows rejected — ${(res.share * 100).toFixed(0)}% of frame`);
+            const ok = res.share <= win.max;
+            console.log(`[Quick] windows ${ok ? 'carved out' : 'rejected'} — ${(res.share * 100).toFixed(0)}%`);
           }
         } catch (e) { console.warn('[Quick] windows skipped', e); }
       }
@@ -2341,9 +2344,12 @@ const UploadTool = (() => {
 
     /* Carve this surface out of any broad layer underneath — a facade mask
        covers the whole building, so a roof split out afterwards would
-       otherwise sit on pixels that layer still claims. */
+       otherwise sit on pixels that layer still claims. A mask well past the
+       size this kind of object should be is a miss, and carving with it
+       would punch a hole in a layer that was correct. */
+    const trustworthy = !maxShare || share <= maxShare;
     const BROAD_NAMES = ['Фасад', 'Қабырға', 'Құрылыс', 'Төбе', 'Еден'];
-    for (let li = 0; li < state.masks.length; li++) {
+    for (let li = 0; trustworthy && li < state.masks.length; li++) {
       if (li === idx || !BROAD_NAMES.includes(state.masks[li].name)) continue;
       const bCtx = state.masks[li].canvas.getContext('2d', { willReadFrequently: true });
       const bImg = bCtx.getImageData(0, 0, w, h);
