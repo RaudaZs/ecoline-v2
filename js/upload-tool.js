@@ -1686,6 +1686,24 @@ const UploadTool = (() => {
         await applyAutoSegMask(key);
       }
 
+      /* On a facade the model often misses the windows, and then they get
+         painted along with the wall. Ask for them by name as a fallback. */
+      if (mode === 'facade' && !autoSegMasks.windowpane) {
+        step('⏳ Терезе...');
+        const win = TEXT_SEG_CHIPS.find(c => c.label === 'Терезе');
+        try {
+          const res = await runTextSegment(win.prompt, win.label, win.neg, win.max, { silent: true });
+          if (res && res.share > win.max) {
+            const m = state.masks[res.idx];
+            if (m) {
+              m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
+              m.name = '';
+            }
+            console.log(`[Quick] windows rejected — ${(res.share * 100).toFixed(0)}% of frame`);
+          }
+        } catch (e) { console.warn('[Quick] windows skipped', e); }
+      }
+
       const names = state.masks.filter(m => m.name).map(m => m.name);
       if (window.track) track('analysis_done', {
         mode, surfaces: names.join(','), seconds: Math.round((Date.now() - t0) / 1000),
@@ -2179,7 +2197,7 @@ const UploadTool = (() => {
     { prompt: 'roof of the house, rooftop',  neg: 'sky, tree, grass, ground, wall, window', label: 'Шатыр',   color: '#f97316', max: 0.40 },
     { prompt: 'basement, socle, foundation', neg: 'wall, window, ground', label: 'Цоколь',  color: '#78716c', max: 0.35 },
     { prompt: 'facade wall',                 neg: 'sky, roof, window',    label: 'Фасад',   color: '#0ea5e9', max: 0.85 },
-    { prompt: 'window',                      neg: 'wall',                 label: 'Терезе',  color: '#06b6d4', max: 0.40 },
+    { prompt: 'windows of the building',     neg: 'wall, roof, sky, door',  label: 'Терезе',  color: '#06b6d4', max: 0.30 },
     { prompt: 'door',                        neg: 'wall',                 label: 'Есік',    color: '#f43f5e', max: 0.40 },
     { prompt: 'skirting board, baseboard',   neg: 'wall, floor',          label: 'Плинтус', color: '#ec4899', max: 0.12 },
   ];
