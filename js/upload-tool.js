@@ -1364,6 +1364,7 @@ const UploadTool = (() => {
     wall:    { label: 'Қабырға', btnColor: '#6366f1' },
     ceiling: { label: 'Төбе',    btnColor: '#f59e0b' },
     floor:   { label: 'Еден',    btnColor: '#10b981' },
+    rug:     { label: 'Кілем',   btnColor: '#8b5cf6' },
     // Exterior — ADE20K has no separate roof or socle class,
     // so the model returns the house as one piece. Refine with SAM.
     building: { label: 'Фасад',   btnColor: '#0ea5e9' },
@@ -1570,7 +1571,7 @@ const UploadTool = (() => {
 
       // Median smoothing keeps the line straight across noisy columns
       const out = Int32Array.from(snapped);
-      const RS = Math.max(2, Math.round(w * 0.008));
+      const RS = Math.max(3, Math.round(w * 0.02));
       const buf = [];
       for (let x = 0; x < w; x++) {
         if (snapped[x] < 0) continue;
@@ -1582,6 +1583,36 @@ const UploadTool = (() => {
         if (buf.length < 3) continue;
         buf.sort((a, b) => a - b);
         out[x] = buf[buf.length >> 1];
+      }
+
+      /* Where a wall meets a ceiling or a floor the real boundary is a
+         straight line — perspective tilts it, but never bends it. Fit a
+         line and pull the edge onto it, harder the wavier it started. */
+      let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (let x = 0; x < w; x++) {
+        if (out[x] < 0) continue;
+        n++; sx += x; sy += out[x]; sxx += x * x; sxy += x * out[x];
+      }
+      if (n > w * 0.4) {
+        const den = n * sxx - sx * sx;
+        if (Math.abs(den) > 1e-6) {
+          const slope = (n * sxy - sx * sy) / den;
+          const icpt = (sy - slope * sx) / n;
+          let dev = 0, dn = 0;
+          for (let x = 0; x < w; x++) {
+            if (out[x] < 0) continue;
+            dev += Math.abs(out[x] - (slope * x + icpt)); dn++;
+          }
+          const mad = dev / Math.max(1, dn);
+          // A corner between two walls is genuinely bent — don't flatten it
+          if (mad < h * 0.06) {
+            const pull = Math.min(0.9, mad / (h * 0.015));
+            for (let x = 0; x < w; x++) {
+              if (out[x] < 0) continue;
+              out[x] = Math.round(out[x] * (1 - pull) + (slope * x + icpt) * pull);
+            }
+          }
+        }
       }
       return { raw, out };
     };
@@ -2101,10 +2132,14 @@ const UploadTool = (() => {
       }
 
       /* Where two stretched masks overlap, the pixel belongs to the smaller
-         object — a door edge is a door, not the wall behind it. */
+         object — a door edge is a door, not the wall behind it. Floor and
+         ceiling also take precedence over the wall, so a rug or a cornice
+         doesn't end up carrying the wall colour. */
       const neighbours = key === 'wall'
-        ? ['door', 'windowpane', 'ceiling', 'floor']
-        : (key === 'ceiling' || key === 'floor') ? ['door', 'windowpane'] : [];
+        ? ['door', 'windowpane', 'ceiling', 'floor', 'rug']
+        : key === 'ceiling' ? ['door', 'windowpane', 'floor']
+        : key === 'floor' ? ['door', 'windowpane', 'rug']
+        : [];
 
       for (const nk of neighbours) {
         if (!autoSegMasks[nk]) continue;
