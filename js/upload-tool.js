@@ -179,12 +179,12 @@ const UploadTool = (() => {
             <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
-          <!-- Analysis runs by itself once a photo is in. Nobody has to
-               tell us whether they photographed a room or a house — the
-               model's own labels say which it is. -->
+          <!-- One button starts the whole thing. Nobody has to tell us
+               whether they photographed a room or a house — the model's
+               own labels say which it is. -->
           <div class="quick-bar hidden" id="quick-bar" style="display:none;flex-direction:column;gap:10px;padding:14px;background:rgba(45,106,79,0.12);border-radius:12px;margin-bottom:10px">
             <div id="quick-progress" style="color:#86efac;font-size:12px;min-height:18px"></div>
-            <button id="btn-quick-retry" class="hidden" style="display:none;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#e5e7eb;padding:6px 14px;border-radius:8px;font-size:12px;cursor:pointer;align-self:flex-start">🔄 Қайта талдау</button>
+            <button id="btn-quick-run" style="background:#2D6A4F;padding:14px 12px;font-size:14px;border-radius:10px;border:none;color:#fff;font-weight:600;cursor:pointer;line-height:1.3">🔍 Талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">беткейлерді өзі табады</span></button>
             <button id="btn-toggle-advanced" style="background:none;border:none;color:rgba(255,255,255,.45);font-size:11px;cursor:pointer;padding:2px;text-align:left">Қолмен реттеу ▾</button>
           </div>
 
@@ -357,7 +357,7 @@ const UploadTool = (() => {
       btnAutoSegment: modal.querySelector('#btn-auto-segment'),
       // One-tap mode
       quickBar: modal.querySelector('#quick-bar'),
-      btnQuickRetry: modal.querySelector('#btn-quick-retry'),
+      btnQuickRun: modal.querySelector('#btn-quick-run'),
       quickProgress: modal.querySelector('#quick-progress'),
       btnToggleAdvanced: modal.querySelector('#btn-toggle-advanced'),
       autoSegStatus: modal.querySelector('#auto-seg-status'),
@@ -415,7 +415,7 @@ const UploadTool = (() => {
     els.samBtnRun.addEventListener('click', runSamSegmentation);
 
     // One-tap analysis
-    els.btnQuickRetry.addEventListener('click', () => runQuickAnalysis());
+    els.btnQuickRun.addEventListener('click', () => runQuickAnalysis());
     els.btnToggleAdvanced.addEventListener('click', toggleAdvanced);
 
     // Auto-segment
@@ -533,17 +533,14 @@ const UploadTool = (() => {
     els.quickBar.classList.toggle('hidden', isLocal);
     els.quickBar.style.display = isLocal ? 'none' : 'flex';
     els.quickProgress.textContent = '';
+    els.btnQuickRun.disabled = false;
+    els.btnQuickRun.innerHTML = '🔍 Талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">беткейлерді өзі табады</span>';
     advancedOpen = false;
     applyAdvancedVisibility(isLocal);
 
     els.autoSegStatus.textContent = '';
     els.textSegStatus.textContent = '';
     renderTextSegChips();
-
-    // Straight to work — the photo is the whole instruction we need
-    if (isLocal) return;
-    if (quickRunning) quickPending = true;   // a new photo mid-run: queue it
-    else runQuickAnalysis();
   }
 
   let advancedOpen = false;
@@ -1772,7 +1769,7 @@ const UploadTool = (() => {
     return true;
   }
 
-  let quickRunning = false, quickPending = false;
+  let quickRunning = false;
 
   /* Indoors the model sees a ceiling; outdoors it sees a building and no
      ceiling at all. That is enough to tell the two apart, so there is
@@ -1795,8 +1792,7 @@ const UploadTool = (() => {
 
     quickRunning = true;
     let mode = null;
-    els.btnQuickRetry.classList.add('hidden');
-    els.btnQuickRetry.style.display = 'none';
+    els.btnQuickRun.disabled = true;
     const t0 = Date.now();
     if (window.track) track('analysis_start', {});
     let roofFailed = false;
@@ -1920,9 +1916,8 @@ const UploadTool = (() => {
       step('❌ Қате: ' + err.message + ' — қайта көріңіз');
     } finally {
       quickRunning = false;
-      els.btnQuickRetry.classList.remove('hidden');
-      els.btnQuickRetry.style.display = 'inline-block';
-      if (quickPending) { quickPending = false; runQuickAnalysis(); }
+      els.btnQuickRun.disabled = false;
+      els.btnQuickRun.innerHTML = '🔄 Қайта талдау';
     }
   }
 
