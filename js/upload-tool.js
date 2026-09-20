@@ -521,6 +521,9 @@ const UploadTool = (() => {
     }];
     state.activeMaskIndex = 0;
     state.undoStack = [];
+    // A new photo: nothing measured on the old one applies any more
+    pristineByKey = {};
+    roofEdge = null;
     if (window.track) track('photo_uploaded', {});
     renderLayers();
     updateApplyButton();
@@ -607,6 +610,7 @@ const UploadTool = (() => {
     // Shape commit
     if (state.isShaping && state.shapeStart) {
       commitShape(e);
+      syncPristine(state.activeMaskIndex);
       state.isShaping = false;
       state.shapeStart = null;
       updateApplyButton();
@@ -614,6 +618,7 @@ const UploadTool = (() => {
       return;
     }
 
+    if (state.isDrawing) syncPristine(state.activeMaskIndex);
     state.isDrawing = false;
     updateApplyButton();
   }
@@ -1117,6 +1122,7 @@ const UploadTool = (() => {
             }
           }
           ctx.putImageData(maskPixels, 0, 0);
+          syncPristine(state.activeMaskIndex);
           renderMaskOverlay();
           resolve();
         };
@@ -1214,6 +1220,7 @@ const UploadTool = (() => {
       const ctx = mask.canvas.getContext('2d');
       ctx.clearRect(0, 0, mask.canvas.width, mask.canvas.height);
       ctx.drawImage(last.canvas, 0, 0);
+      syncPristine(last.index);
       renderMaskOverlay();
     }
     els.btnUndo.disabled = state.undoStack.length === 0;
@@ -1226,6 +1233,7 @@ const UploadTool = (() => {
     saveUndoState();
     const ctx = mask.canvas.getContext('2d');
     ctx.clearRect(0, 0, mask.canvas.width, mask.canvas.height);
+    syncPristine(state.activeMaskIndex);
     renderMaskOverlay();
     updateApplyButton();
   }
@@ -1377,6 +1385,10 @@ const UploadTool = (() => {
     stairs:   { label: 'Баспалдақ', btnColor: '#eab308' },
   };
   let autoSegMasks = {};
+  /* Untouched copy of each broad layer (wall, facade) as the model gave it,
+     before any other layer was carved out of it. Geometric layers — roof,
+     skirting — re-cut the broad layer from this copy on every slider move. */
+  let pristineByKey = {};
 
   async function runAutoSegment(opts) {
     const quiet = opts && opts.silent;
@@ -1446,6 +1458,10 @@ const UploadTool = (() => {
 
       // 4) Filter wall/ceiling/floor from output
       autoSegMasks = {};
+      pristineByKey = {};
+      roofEdge = null;
+      const oldRoofCtl = document.getElementById('roofCtl');
+      if (oldRoofCtl) oldRoofCtl.remove();
       if (Array.isArray(segments)) {
         for (const seg of segments) {
           const key = seg.label?.toLowerCase();
@@ -1524,6 +1540,16 @@ const UploadTool = (() => {
         sk.style.cssText = 'background:#ec4899;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;';
         sk.addEventListener('click', () => buildSkirting(baseKey, outdoor));
         picker.appendChild(sk);
+      }
+      /* No model here knows "roof" either — it is the part of the building
+         above the eaves line, which the photo shows as a long straight edge */
+      const roofBaseKey = ['building', 'house', 'skyscraper', 'hovel'].find(k => autoSegMasks[k]);
+      if (roofBaseKey) {
+        const rb = document.createElement('button');
+        rb.textContent = 'Шатыр (карниз)';
+        rb.style.cssText = 'background:#f97316;color:#fff;border:none;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;';
+        rb.addEventListener('click', () => buildRoofFromEaves(roofBaseKey));
+        picker.appendChild(rb);
       }
     }
     els.autoSegBar.appendChild(picker);
@@ -1647,6 +1673,103 @@ const UploadTool = (() => {
      split each surface into its own layer, then stop. Everything here is
      already available separately in the advanced panels — this just does
      it in the right order so the person doesn't have to know that order. */
+
+  // ===== CLEAN WALL MASK =====
+  // Removes other detected surfaces/objects from the wall mask.
+  // This keeps windows, doors, ceiling and floor from being painted as wall.
+  async function cleanWallMaskFromOtherSurfaces() {
+    const wall = state.masks.find(m => (m.name || '').toLowerCase().includes('қабырға'));
+    if (!wall || !wall.canvas) return false;
+
+    const excludeNames = [
+      'төбе', 'ceiling',
+      'еден', 'floor',
+      'терезе', 'window',
+      'есік', 'door',
+      'жиһаз', 'furniture'
+    ];
+
+    const excludeMasks = state.masks.filter(m => {
+      if (!m || !m.canvas || m === wall) return false;
+      const name = (m.name || '').toLowerCase();
+      return excludeNames.some(k => name.includes(k));
+    });
+
+    if (!excludeMasks.length) return false;
+
+    const w = wall.canvas.width;
+    const h = wall.canvas.height;
+    const wallCtx = wall.canvas.getContext('2d');
+    const wallData = wallCtx.getImageData(0, 0, w, h);
+
+    const excludeData = excludeMasks.map(m =>
+      m.canvas.getContext('2d').getImageData(0, 0, w, h)
+    );
+
+    for (let p = 0; p < wallData.data.length; p += 4) {
+      let excluded = false;
+
+      for (const data of excludeData) {
+        // Any visible pixel in an exclusion mask removes that pixel
+        // from the wall mask.
+        if (data.data[p + 3] > 32 && data.data[p] > 32) {
+          excluded = true;
+          break;
+        }
+      }
+
+      if (excluded) {
+        wallData.data[p] = 0;
+        wallData.data[p + 1] = 0;
+        wallData.data[p + 2] = 0;
+        wallData.data[p + 3] = 0;
+      }
+    }
+
+    wallCtx.putImageData(wallData, 0, 0);
+    console.log('[WallClean] Removed exclusion surfaces from wall:',
+      excludeMasks.map(m => m.name));
+    return true;
+  }
+
+  // Also remove a mask by canvas overlap without requiring translated names.
+  // Used after auto-segmentation when labels are known.
+  async function subtractMasksFromWallByIndices(wallIndex, excludeIndices) {
+    const wall = state.masks[wallIndex];
+    if (!wall || !wall.canvas) return false;
+
+    const w = wall.canvas.width;
+    const h = wall.canvas.height;
+    const ctx = wall.canvas.getContext('2d');
+    const wallData = ctx.getImageData(0, 0, w, h);
+
+    const excludes = excludeIndices
+      .map(i => state.masks[i])
+      .filter(m => m && m.canvas)
+      .map(m => m.canvas.getContext('2d').getImageData(0, 0, w, h));
+
+    if (!excludes.length) return false;
+
+    for (let p = 0; p < wallData.data.length; p += 4) {
+      let remove = false;
+      for (const data of excludes) {
+        if (data.data[p + 3] > 32 && data.data[p] > 32) {
+          remove = true;
+          break;
+        }
+      }
+      if (remove) {
+        wallData.data[p] = 0;
+        wallData.data[p + 1] = 0;
+        wallData.data[p + 2] = 0;
+        wallData.data[p + 3] = 0;
+      }
+    }
+
+    ctx.putImageData(wallData, 0, 0);
+    return true;
+  }
+
   async function runQuickAnalysis(mode) {
     if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
 
@@ -1658,6 +1781,7 @@ const UploadTool = (() => {
     const t0 = Date.now();
     if (window.track) track('analysis_start', { mode });
     let roofFailed = false;
+    let roofMethod = null;   // 'text' | 'eaves' | null
     const step = (t) => { els.quickProgress.textContent = t; };
 
     try {
@@ -1672,17 +1796,55 @@ const UploadTool = (() => {
       }
 
       if (mode === 'room') {
-        for (const key of ['wall', 'ceiling', 'floor']) {
+        for (const key of ['wall', 'ceiling', 'floor', 'windowpane', 'door']) {
           if (!autoSegMasks[key]) continue;
           step(`⏳ ${SEG_LABELS[key].label}...`);
           await applyAutoSegMask(key);
         }
+
+        // IMPORTANT:
+        // Wall must not include ceiling/floor/window/door.
+        // Run the subtraction only after all detected masks exist.
+        step('⏳ Қабырғаны тазалау...');
+        await cleanWallMaskFromOtherSurfaces();
       } else {
         const baseKey = ['building', 'house', 'skyscraper', 'wall', 'hovel']
           .find(k => autoSegMasks[k]);
         if (baseKey) {
           step('⏳ Фасад...');
           await applyAutoSegMask(baseKey);
+        }
+
+        /* Windows and doors go first: they carve the facade, and the eaves
+           search further down has to know where they are — a row of window
+           heads is a long straight edge too. */
+        for (const key of ['windowpane', 'door']) {
+          if (!autoSegMasks[key]) continue;
+          step(`⏳ ${SEG_LABELS[key].label}...`);
+          await applyAutoSegMask(key);
+        }
+
+        /* On a facade the model often misses the windows, and then they get
+           painted along with the wall. Ask for them by name, use the mask to
+           carve the facade, then drop the layer — nobody paints their glass,
+           and a layer slot is better spent on a surface that gets colour. */
+        if (!autoSegMasks.windowpane) {
+          step('⏳ Терезе...');
+          const win = TEXT_SEG_CHIPS.find(c => c.label === 'Терезе');
+          try {
+            const res = await runTextSegment(win.prompt, win.label, win.neg, win.max, { silent: true });
+            if (res) {
+              const ok = res.share <= win.max;
+              // The carve has to survive later re-cuts from the pristine copy
+              if (ok) bakeIntoPristine(res.idx);
+              const m = state.masks[res.idx];
+              if (m) {
+                m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
+                m.name = '';
+              }
+              console.log(`[Quick] windows ${ok ? 'carved out' : 'rejected'} — ${(res.share * 100).toFixed(0)}%`);
+            }
+          } catch (e) { console.warn('[Quick] windows skipped', e); }
         }
 
         // The model has no roof class, so ask for it by name
@@ -1699,10 +1861,19 @@ const UploadTool = (() => {
               m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
               m.name = '';
             }
-            roofFailed = true;
             console.log(`[Quick] roof rejected — ${(res.share * 100).toFixed(0)}% of frame`);
+          } else if (res) {
+            roofMethod = 'text';
           }
-        } catch (e) { roofFailed = true; console.warn('[Quick] roof skipped', e); }
+        } catch (e) { console.warn('[Quick] roof skipped', e); }
+
+        /* When the text model misses, find the eaves line in the photo and
+           take everything of the building above it. No model call. */
+        if (!roofMethod && baseKey) {
+          step('⏳ Карниз сызығы...');
+          if (await buildRoofFromEaves(baseKey, { silent: true })) roofMethod = 'eaves';
+        }
+        roofFailed = !roofMethod;
 
         if (baseKey) {
           step('⏳ Цоколь...');
@@ -1710,38 +1881,10 @@ const UploadTool = (() => {
         }
       }
 
-      // Windows and doors, if the model found them
-      for (const key of ['windowpane', 'door']) {
-        if (!autoSegMasks[key]) continue;
-        step(`⏳ ${SEG_LABELS[key].label}...`);
-        await applyAutoSegMask(key);
-      }
-
-      /* On a facade the model often misses the windows, and then they get
-         painted along with the wall. Ask for them by name, use the mask to
-         carve the facade, then drop the layer — nobody paints their glass,
-         and a layer slot is better spent on a surface that gets colour. */
-      if (mode === 'facade' && !autoSegMasks.windowpane) {
-        step('⏳ Терезе...');
-        const win = TEXT_SEG_CHIPS.find(c => c.label === 'Терезе');
-        try {
-          const res = await runTextSegment(win.prompt, win.label, win.neg, win.max, { silent: true });
-          if (res) {
-            const m = state.masks[res.idx];
-            if (m) {
-              m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
-              m.name = '';
-            }
-            const ok = res.share <= win.max;
-            console.log(`[Quick] windows ${ok ? 'carved out' : 'rejected'} — ${(res.share * 100).toFixed(0)}%`);
-          }
-        } catch (e) { console.warn('[Quick] windows skipped', e); }
-      }
-
       const names = state.masks.filter(m => m.name).map(m => m.name);
       if (window.track) track('analysis_done', {
         mode, surfaces: names.join(','), seconds: Math.round((Date.now() - t0) / 1000),
-        roof_failed: roofFailed ? 1 : 0
+        roof_failed: roofFailed ? 1 : 0, roof_method: roofMethod || 'none'
       });
       if (roofFailed) {
         step(`✅ ${names.join(' · ')} — шатырды «Қолмен реттеу» арқылы қосыңыз`);
@@ -1760,11 +1903,444 @@ const UploadTool = (() => {
     }
   }
 
+  // ===== SHARED: RE-CUT A BROAD LAYER =====
+  /* A broad layer (wall, facade) is rebuilt from its untouched copy minus
+     every other layer, each time a geometric layer (skirting, roof) moves.
+     Rebuilding from the copy keeps a slider drag from eating further into
+     the wall on every move; subtracting all layers — not only the one that
+     moved — keeps the roof and the skirting from undoing each other's cut. */
+  function recutBaseLayer(baseKey) {
+    const meta = SEG_LABELS[baseKey];
+    const baseName = meta ? meta.label : 'Қабырға';
+    const bi = state.masks.findIndex(mk => mk.name === baseName);
+    if (bi === -1) return;
+    const c = state.masks[bi].canvas, w = c.width, h = c.height;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    const pr = pristineByKey[baseKey];
+    if (!pr || pr.width !== w || pr.height !== h) pristineByKey[baseKey] = ctx.getImageData(0, 0, w, h);
+    const out = new ImageData(new Uint8ClampedArray(pristineByKey[baseKey].data), w, h);
+    for (let li = 0; li < state.masks.length; li++) {
+      if (li === bi || !state.masks[li].name) continue;
+      const o = state.masks[li].canvas.getContext('2d', { willReadFrequently: true })
+        .getImageData(0, 0, w, h).data;
+      for (let i = 3; i < o.length; i += 4) {
+        if (o[i] > 0) {
+          out.data[i - 3] = 0; out.data[i - 2] = 0;
+          out.data[i - 1] = 0; out.data[i] = 0;
+        }
+      }
+    }
+    ctx.putImageData(out, 0, 0);
+  }
+
+  /* A layer is about to be dropped after carving (the facade windows).
+     Take its pixels out of the pristine copies too, otherwise the next
+     re-cut would hand them back to the facade. */
+  function bakeIntoPristine(idx) {
+    const m = state.masks[idx];
+    if (!m) return;
+    const d = m.canvas.getContext('2d', { willReadFrequently: true })
+      .getImageData(0, 0, m.canvas.width, m.canvas.height).data;
+    for (const key of Object.keys(pristineByKey)) {
+      const p = pristineByKey[key].data;
+      if (p.length !== d.length) continue;
+      for (let i = 3; i < d.length; i += 4) {
+        if (d[i] > 0) { p[i - 3] = 0; p[i - 2] = 0; p[i - 1] = 0; p[i] = 0; }
+      }
+    }
+  }
+
+  /* The person just edited a layer by hand (or undid a step). If it is a
+     broad layer with a pristine copy, that copy is now stale — rebuild it as what they see
+     plus whatever the roof and the skirting currently cover, so the next
+     slider move keeps their brush strokes instead of reverting them. */
+  function syncPristine(idx) {
+    const m = state.masks[idx];
+    if (!m || !m.name) return;
+    /* Edited the roof or the skirting itself (or undid it): what they
+       gave up goes back to the facade, what they took leaves it */
+    if (m.name === ROOF_NAME && roofKey) { recutBaseLayer(roofKey); return; }
+    if (m.name === skirtName && skirtEdge) { recutBaseLayer(skirtBaseKey); return; }
+    const key = Object.keys(pristineByKey)
+      .find(k => SEG_LABELS[k] && SEG_LABELS[k].label === m.name);
+    if (!key) return;
+    const w = m.canvas.width, h = m.canvas.height;
+    const cur = m.canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
+    const old = pristineByKey[key].data;
+    for (const name of [ROOF_NAME, skirtName]) {
+      const gi = state.masks.findIndex(mk => mk.name === name);
+      if (gi === -1 || gi === idx) continue;
+      const g = state.masks[gi].canvas.getContext('2d', { willReadFrequently: true })
+        .getImageData(0, 0, w, h).data;
+      for (let i = 3; i < g.length; i += 4) {
+        if (g[i] > 0 && old[i] > 0) {
+          cur.data[i - 3] = 255; cur.data[i - 2] = 255;
+          cur.data[i - 1] = 255; cur.data[i] = 255;
+        }
+      }
+    }
+    pristineByKey[key] = cur;
+  }
+
+  // ===== ROOF FROM THE EAVES LINE (geometric, no model call) =====
+  /* ADE20K has no roof class — its "building" is the whole house, roof
+     included. The roof is the part of that mask above the eaves, and the
+     eaves are a long straight edge in the photo: a shadow under the
+     overhang and a change of material. Find that edge, take everything
+     above it. One slider moves the line if it landed on the wrong side
+     of the shadow. */
+  const ROOF_NAME = 'Шатыр';
+  const ROOF_COLOR = '#f97316';
+  let roofEdge = null, roofKey = null, roofShift = 0;
+  let roofBase = null, roofBlocked = null, roofBaseCount = 0;
+
+  /* Finds the line where the roof meets the wall — the eaves.
+     Column by column inside the building mask, look in the upper part for
+     the row with the strongest change between the band of pixels above it
+     and the band below it. The eaves throw a shadow onto the wall and the
+     roof is a different material from the render, so that step is usually
+     the strongest one. Bands are ~1% of the height, which averages away
+     the rows of tiles. Then fit either one straight line (eaves seen from
+     the long side) or a ∧ of two lines (a gable end facing the camera)
+     with RANSAC, so window heads, gutters and tile rows that don't line up
+     across the house are simply outvoted.
+     photo: RGBA pixels; base, blocked: one byte per pixel (1 = inside).
+     Pure function, no DOM. Returns { edge, kind, coverage } or null. */
+  function findEavesLine(photo, base, blocked, w, h) {
+    const k = Math.max(3, Math.round(h * 0.012));
+    const stepX = Math.max(1, Math.round(w / 400));
+    const L = new Float64Array(h + 1), A = new Float64Array(h + 1), B = new Float64Array(h + 1);
+    const runUp = new Int32Array(h), runDn = new Int32Array(h);
+    const cands = [];
+    let cols = 0, minX = w, maxX = -1;
+
+    for (let x = 1; x < w - 1; x += stepX) {
+      let top = -1, bot = -1;
+      for (let y = 0; y < h; y++) if (base[y * w + x]) { top = y; break; }
+      if (top < 0) continue;
+      for (let y = h - 1; y > top; y--) if (base[y * w + x]) { bot = y; break; }
+      const H = bot - top;
+      if (H < h * 0.1) continue;
+      cols++;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+
+      // Running sums down the column (three columns wide, to calm noise):
+      // brightness plus two colour-opponent channels
+      for (let y = 0; y < h; y++) {
+        let l = 0, a = 0, b = 0;
+        for (let dx = -1; dx <= 1; dx++) {
+          const p = (y * w + x + dx) * 4;
+          const r = photo[p], g = photo[p + 1], bl = photo[p + 2];
+          l += 0.299 * r + 0.587 * g + 0.114 * bl;
+          a += r - g;
+          b += (r + g) / 2 - bl;
+        }
+        L[y + 1] = L[y] + l / 3; A[y + 1] = A[y] + a / 3; B[y + 1] = B[y] + b / 3;
+      }
+
+      /* How many clean facade rows run up / down from each row before a
+         window, a door or a hole — the averaging bands must stop there, or
+         dark glass just below a painted belt makes the belt look like a
+         change of material */
+      for (let y = 0; y < h; y++) {
+        const ok = base[y * w + x] && !blocked[y * w + x];
+        runUp[y] = ok ? (y > 0 ? runUp[y - 1] + 1 : 1) : 0;
+      }
+      for (let y = h - 1; y >= 0; y--) {
+        const ok = base[y * w + x] && !blocked[y * w + x];
+        runDn[y] = ok ? (y < h - 1 ? runDn[y + 1] + 1 : 1) : 0;
+      }
+
+      // The eaves are never right at the ridge and never near the ground
+      const y0 = top + Math.max(k, Math.round(H * 0.04));
+      const y1 = Math.min(bot - k, top + Math.round(H * 0.75));
+      if (y1 <= y0) continue;
+      const sc = new Float32Array(y1 - y0 + 1);
+      for (let y = y0; y <= y1; y++) {
+        if (!base[y * w + x]) continue;
+        // A window head or a door top is a strong edge too — not the eaves.
+        // Holes already cut out of the facade count the same way
+        if (runUp[y - 1] < k || runDn[y + 1] < k) continue;
+        // Mean of rows [y-n, y) minus mean of rows (y, y+n], per channel
+        const step = (n) => {
+          const u = Math.min(n, runUp[y - 1]), d = Math.min(n, runDn[y + 1]);
+          const dl = (L[y] - L[y - u]) / u - (L[y + d + 1] - L[y + 1]) / d;
+          const da = (A[y] - A[y - u]) / u - (A[y + d + 1] - A[y + 1]) / d;
+          const db = (B[y] - B[y - u]) / u - (B[y + d + 1] - B[y + 1]) / d;
+          return Math.abs(dl) + 0.6 * (Math.abs(da) + Math.abs(db));
+        };
+        /* Two scales. The short one places the line precisely; the long one
+           asks whether the material really changes here. A painted belt or
+           a floor band is the same render above and below, so over a wide
+           band it averages out, while roof-above-wall does not. */
+        const s = Math.min(step(k), step(k * 5));
+        // The eaves are the highest long line on a house — prefer higher rows
+        sc[y - y0] = s * (1 - 0.4 * (y - top) / H);
+      }
+
+      // Local maxima, the four strongest per column
+      const peaks = [];
+      for (let j = 0; j < sc.length; j++) {
+        const s = sc[j];
+        if (s < 8) continue;
+        let isMax = true;
+        for (let d = -k; d <= k; d++) {
+          if (d && sc[j + d] > s) { isMax = false; break; }
+        }
+        if (isMax) peaks.push({ x, y: y0 + j, s });
+      }
+      peaks.sort((p, q) => q.s - p.s);
+      for (let j = 0; j < Math.min(4, peaks.length); j++) cands.push(peaks[j]);
+    }
+
+    if (cands.length < 15 || cols < 10) return null;
+
+    const tol = Math.max(3, h * 0.012);
+    let seed = 1234567;
+    const rnd = () => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed / 4294967296; };
+    const any = () => cands[Math.floor(rnd() * cands.length)];
+    /* Votes are capped: a line every column agrees on beats a very
+       contrasty one (a row of dark windows) that only half the columns see */
+    for (const c of cands) c.v = Math.min(1, c.s / 30);
+    const support = (f) => {
+      let s = 0;
+      for (const c of cands) if (Math.abs(c.y - f(c.x)) < tol) s += c.v;
+      return s;
+    };
+    const through = (p, q) => {
+      const m = (q.y - p.y) / (q.x - p.x);
+      return { m, c: p.y - m * p.x };
+    };
+    const span = maxX - minX;
+
+    // One straight line — perspective may tilt it, but not much
+    let line = null, lineS = 0;
+    for (let it = 0; it < 500; it++) {
+      const p = any(), q = any();
+      if (Math.abs(q.x - p.x) < span * 0.1) continue;
+      const l = through(p, q);
+      if (Math.abs(l.m) > 0.5) continue;
+      const s = support(x => l.m * x + l.c);
+      if (s > lineS) { lineS = s; line = l; }
+    }
+
+    // A ∧: left side climbs to the apex, right side falls away from it
+    let gable = null, gableS = 0;
+    for (let it = 0; it < 1500; it++) {
+      const pts = [any(), any(), any(), any()].sort((a, b) => a.x - b.x);
+      if (pts[1].x - pts[0].x < span * 0.05 || pts[3].x - pts[2].x < span * 0.05) continue;
+      const lf = through(pts[0], pts[1]), rt = through(pts[2], pts[3]);
+      if (lf.m > -0.08 || rt.m < 0.08 || lf.m < -2.5 || rt.m > 2.5) continue;
+      const xa = (rt.c - lf.c) / (lf.m - rt.m);
+      if (xa < pts[1].x || xa > pts[2].x) continue;
+      const s = support(x => Math.max(lf.m * x + lf.c, rt.m * x + rt.c));
+      if (s > gableS) { gableS = s; gable = { lf, rt, xa }; }
+    }
+
+    // The ∧ has more freedom, so it has to win clearly
+    const isGable = gable && gableS > lineS * 1.2;
+    if (!isGable && !line) return null;
+    const rough = isGable
+      ? x => Math.max(gable.lf.m * x + gable.lf.c, gable.rt.m * x + gable.rt.c)
+      : x => line.m * x + line.c;
+
+    const inl = cands.filter(c => Math.abs(c.y - rough(c.x)) < tol);
+    const coverage = new Set(inl.map(c => c.x)).size / cols;
+    // Fewer than half the columns agree — no clear eaves line (a flat roof, a
+    // parapet); better to say so than to cut the facade along a window row
+    if (coverage < 0.5) return null;
+
+    // Least-squares on the inliers for the final position
+    const fit = (pts) => {
+      let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (const c of pts) { n++; sx += c.x; sy += c.y; sxx += c.x * c.x; sxy += c.x * c.y; }
+      const den = n * sxx - sx * sx;
+      if (n < 3 || Math.abs(den) < 1e-6) return null;
+      const m = (n * sxy - sx * sy) / den;
+      return { m, c: (sy - m * sx) / n };
+    };
+    let edgeAt;
+    if (isGable) {
+      const lf = fit(inl.filter(c => c.x < gable.xa)) || gable.lf;
+      const rt = fit(inl.filter(c => c.x >= gable.xa)) || gable.rt;
+      edgeAt = x => Math.max(lf.m * x + lf.c, rt.m * x + rt.c);
+    } else {
+      const l = fit(inl) || line;
+      edgeAt = x => l.m * x + l.c;
+    }
+
+    const edge = new Int32Array(w);
+    for (let x = 0; x < w; x++) edge[x] = Math.max(0, Math.min(h - 1, Math.round(edgeAt(x))));
+    return { edge, kind: isGable ? 'gable' : 'line', coverage };
+  }
+
+  // Rebuild the building pixels the roof is taken from (after a re-segment)
+  function refreshRoofBase() {
+    const pr = roofKey && pristineByKey[roofKey];
+    if (!pr) return;
+    const d = pr.data, n = d.length >> 2;
+    if (!roofBase || roofBase.length !== n) roofBase = new Uint8Array(n);
+    let count = 0;
+    for (let i = 0; i < n; i++) {
+      const on = d[i * 4 + 3] > 0 ? 1 : 0;
+      roofBase[i] = on; count += on;
+    }
+    roofBaseCount = count;
+  }
+
+  async function buildRoofFromEaves(baseKey, opts) {
+    const quiet = opts && opts.silent;
+    const say = (t) => { els.autoSegStatus.textContent = t; };
+    if (!['building', 'house', 'skyscraper', 'hovel'].includes(baseKey) || !autoSegMasks[baseKey]) {
+      return false;
+    }
+    say('⏳ Карниз сызығы ізделуде...');
+
+    try {
+      const baseName = SEG_LABELS[baseKey].label;
+      if (state.masks.findIndex(mk => mk.name === baseName) === -1) await applyAutoSegMask(baseKey);
+      const bi = state.masks.findIndex(mk => mk.name === baseName);
+      if (bi === -1) return false;
+
+      const w = els.canvasBase.width, h = els.canvasBase.height;
+      if (!pristineByKey[baseKey]) {
+        pristineByKey[baseKey] = state.masks[bi].canvas
+          .getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
+      }
+      roofKey = baseKey;
+      refreshRoofBase();
+
+      // Windows, doors, socle — anything already on its own layer
+      const blocked = new Uint8Array(w * h);
+      for (let li = 0; li < state.masks.length; li++) {
+        const m = state.masks[li];
+        if (li === bi || !m.name || m.name === ROOF_NAME) continue;
+        const d = m.canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+        for (let i = 0; i < blocked.length; i++) if (d[i * 4 + 3] > 0) blocked[i] = 1;
+      }
+      roofBlocked = blocked;
+
+      const photo = els.canvasBase.getContext('2d', { willReadFrequently: true })
+        .getImageData(0, 0, w, h).data;
+      const t0 = performance.now();
+      const res = findEavesLine(photo, roofBase, blocked, w, h);
+      if (!res) {
+        roofEdge = null;
+        say('⚠ Карниз сызығы табылмады — шатырды қолмен белгілеңіз');
+        return false;
+      }
+
+      roofEdge = res.edge;
+      const share = drawRoof(0, true);
+      if (!share) {
+        roofEdge = null;
+        say('⚠ Карниз сызығы сенімсіз — шатырды қолмен белгілеңіз');
+        return false;
+      }
+      console.log(`[Roof] eaves: ${res.kind}, ${(res.coverage * 100).toFixed(0)}% of columns agree, ` +
+        `roof = ${(share * 100).toFixed(0)}% of building, ${Math.round(performance.now() - t0)}ms`);
+      showRoofSlider(h);
+      if (!quiet) say('✅ Шатыр — карниз сызығын слайдермен реттеңіз');
+      return true;
+
+    } catch (err) {
+      console.error('[Roof]', err);
+      roofEdge = null;
+      say('❌ Шатыр қатесі');
+      return false;
+    }
+  }
+
+  /* shift moves the eaves line down (+) or up (−). On the first draw
+     (validate) a roof that is a sliver or most of the house means the line
+     is wrong — better no layer than one the person then has to undo. */
+  function drawRoof(shift, validate) {
+    if (!roofEdge || !roofBase) return 0;
+    roofShift = shift;
+    const w = els.canvasBase.width, h = els.canvasBase.height;
+    if (roofBase.length !== w * h) return 0;
+    const out = new Uint8ClampedArray(w * h * 4);
+    let n = 0;
+    for (let x = 0; x < w; x++) {
+      const lim = Math.min(h, roofEdge[x] + shift);
+      for (let y = 0; y < lim; y++) {
+        const i = y * w + x;
+        if (!roofBase[i] || (roofBlocked && roofBlocked[i])) continue;
+        const p = i * 4;
+        out[p] = 255; out[p + 1] = 255; out[p + 2] = 255; out[p + 3] = 255;
+        n++;
+      }
+    }
+    const share = n / Math.max(1, roofBaseCount);
+    if (validate && (share < 0.04 || share > 0.65)) {
+      console.log(`[Roof] rejected — roof would be ${(share * 100).toFixed(0)}% of the building`);
+      return 0;
+    }
+
+    let idx = state.masks.findIndex(mk => mk.name === ROOF_NAME);
+    if (idx === -1) {
+      const empty = findEmptyLayerIndex();
+      if (empty !== -1) {
+        state.masks[empty].name = ROOF_NAME;
+        state.masks[empty].color = ROOF_COLOR;
+        idx = empty;
+      } else {
+        if (state.masks.length >= 5) {
+          alert('Макс 5 қабат. Бұрынғы қабатты өшіріңіз.');
+          return 0;
+        }
+        state.masks.push({ name: ROOF_NAME, canvas: createMaskCanvas(w, h), color: ROOF_COLOR });
+        idx = state.masks.length - 1;
+      }
+    }
+    state.activeMaskIndex = idx;
+    if (validate) saveUndoState();
+
+    const ctx = state.masks[idx].canvas.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.putImageData(new ImageData(out, w, h), 0, 0);
+
+    // The facade gives the roof its pixels back or takes them, as the line moves
+    recutBaseLayer(roofKey);
+
+    renderLayers();
+    renderMaskOverlay();
+    updateApplyButton();
+    return Math.max(share, 1e-6);
+  }
+
+  function showRoofSlider(h) {
+    const old = document.getElementById('roofCtl');
+    if (old) old.remove();
+
+    const lim = Math.round(h * 0.15);
+    const box = document.createElement('div');
+    box.id = 'roofCtl';
+    box.style.cssText = 'display:flex;align-items:center;gap:8px;width:100%;margin-top:8px;padding:8px 10px;background:rgba(249,115,22,0.08);border-radius:8px;';
+
+    const lb = document.createElement('span');
+    lb.textContent = 'Карниз';
+    lb.style.cssText = 'color:#fdba74;font-size:11px;min-width:62px;';
+    const sl = document.createElement('input');
+    sl.type = 'range'; sl.min = -lim; sl.max = lim; sl.value = 0;
+    sl.style.cssText = 'flex:1;accent-color:#f97316;';
+    const num = document.createElement('span');
+    num.textContent = '0px';
+    num.style.cssText = 'color:#fed7aa;font-size:11px;min-width:38px;text-align:right;';
+    sl.addEventListener('input', () => {
+      num.textContent = sl.value + 'px';
+      drawRoof(parseInt(sl.value, 10), false);
+    });
+
+    box.append(lb, sl, num);
+    els.autoSegBar.appendChild(box);
+  }
+
   // ===== SKIRTING (geometric, no model call) =====
   let skirtEdge = null, skirtW = 0, skirtH = 0;
   let skirtDoor = null;   // door mask, so the strip skips door frames
   let skirtWall = null;   // wall mask, so the strip stays behind furniture
-  let skirtWallBackup = null;  // pristine wall layer, re-cut on every slider move
   let skirtBand = 0, skirtShift = 0;  // current slider values, for re-cutting
   let skirtName = 'Плинтус', skirtBaseKey = 'wall';
 
@@ -1935,25 +2511,8 @@ const UploadTool = (() => {
     mCtx.clearRect(0, 0, w, h);
     mCtx.putImageData(new ImageData(out, w, h), 0, 0);
 
-    /* Cut the strip out of the wall layer, so the two never share pixels.
-       Re-cut from a pristine copy each time, otherwise dragging the slider
-       would eat further into the wall on every move. */
-    const baseName = SEG_LABELS[skirtBaseKey] ? SEG_LABELS[skirtBaseKey].label : 'Қабырға';
-    const wallIdx = state.masks.findIndex(mk => mk.name === baseName);
-    if (wallIdx !== -1) {
-      const wlCtx = state.masks[wallIdx].canvas.getContext('2d', { willReadFrequently: true });
-      if (!skirtWallBackup) {
-        skirtWallBackup = wlCtx.getImageData(0, 0, w, h);
-      }
-      const wl = new ImageData(new Uint8ClampedArray(skirtWallBackup.data), w, h);
-      for (let i = 3; i < out.length; i += 4) {
-        if (out[i] > 0) {
-          wl.data[i - 3] = 0; wl.data[i - 2] = 0;
-          wl.data[i - 1] = 0; wl.data[i] = 0;
-        }
-      }
-      wlCtx.putImageData(wl, 0, 0);
-    }
+    // Cut the strip out of the wall layer, so the two never share pixels
+    recutBaseLayer(skirtBaseKey);
 
     renderLayers();
     renderMaskOverlay();
@@ -2018,8 +2577,6 @@ const UploadTool = (() => {
   }
 
   async function applyAutoSegMask(key) {
-    // A fresh wall mask invalidates the copy the skirting cut was based on
-    if (key === skirtBaseKey) skirtWallBackup = null;
     const info = autoSegMasks[key];
     if (!info) return;
 
@@ -2175,6 +2732,10 @@ const UploadTool = (() => {
          order of work doesn't matter: split the roof first or last, the
          facade never swallows it. */
       const BROAD = ['wall', 'building', 'house', 'skyscraper', 'ceiling', 'floor'];
+      // Keep the uncarved mask — roof and skirting re-cut from this copy
+      if (BROAD.includes(key) || key === 'hovel') {
+        pristineByKey[key] = new ImageData(new Uint8ClampedArray(mData.data), w, h);
+      }
       if (BROAD.includes(key)) {
         for (let li = 0; li < state.masks.length; li++) {
           if (li === targetIndex) continue;
@@ -2195,6 +2756,12 @@ const UploadTool = (() => {
          cut with the slider values the user already settled on. */
       if (key === skirtBaseKey && skirtEdge && skirtBand > 0) {
         drawSkirting(skirtBand, skirtShift);
+        state.activeMaskIndex = targetIndex;
+      }
+      // Same for the roof: keep the eaves line, take the new outline
+      if (key === roofKey && roofEdge) {
+        refreshRoofBase();
+        drawRoof(roofShift, false);
         state.activeMaskIndex = targetIndex;
       }
 
