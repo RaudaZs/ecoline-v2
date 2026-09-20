@@ -179,13 +179,12 @@ const UploadTool = (() => {
             <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
-          <!-- One-tap analysis. This is what most people will use. -->
+          <!-- Analysis runs by itself once a photo is in. Nobody has to
+               tell us whether they photographed a room or a house — the
+               model's own labels say which it is. -->
           <div class="quick-bar hidden" id="quick-bar" style="display:none;flex-direction:column;gap:10px;padding:14px;background:rgba(45,106,79,0.12);border-radius:12px;margin-bottom:10px">
-            <div style="display:flex;gap:8px">
-              <button id="btn-quick-room" style="flex:1;background:#2D6A4F;padding:14px 12px;font-size:14px;border-radius:10px;border:none;color:#fff;font-weight:600;cursor:pointer;line-height:1.3">🛋 Бөлмені талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">қабырға · төбе · еден</span></button>
-              <button id="btn-quick-facade" style="flex:1;background:#0ea5e9;padding:14px 12px;font-size:14px;border-radius:10px;border:none;color:#fff;font-weight:600;cursor:pointer;line-height:1.3">🏠 Фасадты талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">фасад · шатыр · цоколь</span></button>
-            </div>
-            <div id="quick-progress" style="color:#86efac;font-size:12px;min-height:16px"></div>
+            <div id="quick-progress" style="color:#86efac;font-size:12px;min-height:18px"></div>
+            <button id="btn-quick-retry" class="hidden" style="display:none;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.2);color:#e5e7eb;padding:6px 14px;border-radius:8px;font-size:12px;cursor:pointer;align-self:flex-start">🔄 Қайта талдау</button>
             <button id="btn-toggle-advanced" style="background:none;border:none;color:rgba(255,255,255,.45);font-size:11px;cursor:pointer;padding:2px;text-align:left">Қолмен реттеу ▾</button>
           </div>
 
@@ -358,8 +357,7 @@ const UploadTool = (() => {
       btnAutoSegment: modal.querySelector('#btn-auto-segment'),
       // One-tap mode
       quickBar: modal.querySelector('#quick-bar'),
-      btnQuickRoom: modal.querySelector('#btn-quick-room'),
-      btnQuickFacade: modal.querySelector('#btn-quick-facade'),
+      btnQuickRetry: modal.querySelector('#btn-quick-retry'),
       quickProgress: modal.querySelector('#quick-progress'),
       btnToggleAdvanced: modal.querySelector('#btn-toggle-advanced'),
       autoSegStatus: modal.querySelector('#auto-seg-status'),
@@ -417,8 +415,7 @@ const UploadTool = (() => {
     els.samBtnRun.addEventListener('click', runSamSegmentation);
 
     // One-tap analysis
-    els.btnQuickRoom.addEventListener('click', () => runQuickAnalysis('room'));
-    els.btnQuickFacade.addEventListener('click', () => runQuickAnalysis('facade'));
+    els.btnQuickRetry.addEventListener('click', () => runQuickAnalysis());
     els.btnToggleAdvanced.addEventListener('click', toggleAdvanced);
 
     // Auto-segment
@@ -542,6 +539,11 @@ const UploadTool = (() => {
     els.autoSegStatus.textContent = '';
     els.textSegStatus.textContent = '';
     renderTextSegChips();
+
+    // Straight to work — the photo is the whole instruction we need
+    if (isLocal) return;
+    if (quickRunning) quickPending = true;   // a new photo mid-run: queue it
+    else runQuickAnalysis();
   }
 
   let advancedOpen = false;
@@ -1770,16 +1772,33 @@ const UploadTool = (() => {
     return true;
   }
 
-  async function runQuickAnalysis(mode) {
+  let quickRunning = false, quickPending = false;
+
+  /* Indoors the model sees a ceiling; outdoors it sees a building and no
+     ceiling at all. That is enough to tell the two apart, so there is
+     nothing to ask the person before starting. */
+  function detectMode() {
+    const outdoor = ['building', 'house', 'skyscraper', 'hovel'].some(k => autoSegMasks[k]);
+    // A building and no interior wall — nothing indoors about this photo
+    if (outdoor && !autoSegMasks.wall) return 'facade';
+    // A porch roof can read as a ceiling, so the wall has the final say
+    if (autoSegMasks.ceiling) return 'room';
+    return outdoor ? 'facade' : 'room';
+  }
+
+  async function runQuickAnalysis() {
+    if (quickRunning) return;
     if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
 
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
     if (isLocal) { alert('Талдау тек онлайн нұсқада жұмыс істейді (Vercel).'); return; }
 
-    els.btnQuickRoom.disabled = true;
-    els.btnQuickFacade.disabled = true;
+    quickRunning = true;
+    let mode = null;
+    els.btnQuickRetry.classList.add('hidden');
+    els.btnQuickRetry.style.display = 'none';
     const t0 = Date.now();
-    if (window.track) track('analysis_start', { mode });
+    if (window.track) track('analysis_start', {});
     let roofFailed = false;
     let roofMethod = null;   // 'text' | 'eaves' | null
     const step = (t) => { els.quickProgress.textContent = t; };
@@ -1789,6 +1808,8 @@ const UploadTool = (() => {
       await runAutoSegment({ silent: true });
 
       const found = Object.keys(autoSegMasks);
+      mode = detectMode();
+      console.log(`[Quick] ${mode} — labels: ${found.join(', ') || 'none'}`);
       if (!found.length) {
         step('⚠ Беткей табылмады. Қолмен реттеп көріңіз.');
         advancedOpen = true; applyAdvancedVisibility(false);
@@ -1895,11 +1916,13 @@ const UploadTool = (() => {
 
     } catch (err) {
       console.error('[Quick] Error:', err);
-      if (window.track) track('analysis_failed', { mode, error: String(err.message).slice(0, 80) });
-      step('❌ Қате: ' + err.message);
+      if (window.track) track('analysis_failed', { mode: mode || 'unknown', error: String(err.message).slice(0, 80) });
+      step('❌ Қате: ' + err.message + ' — қайта көріңіз');
     } finally {
-      els.btnQuickRoom.disabled = false;
-      els.btnQuickFacade.disabled = false;
+      quickRunning = false;
+      els.btnQuickRetry.classList.remove('hidden');
+      els.btnQuickRetry.style.display = 'inline-block';
+      if (quickPending) { quickPending = false; runQuickAnalysis(); }
     }
   }
 
