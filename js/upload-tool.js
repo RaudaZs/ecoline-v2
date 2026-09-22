@@ -179,12 +179,8 @@ const UploadTool = (() => {
             <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
-          <!-- One button starts the whole thing. Nobody has to tell us
-               whether they photographed a room or a house — the model's
-               own labels say which it is. -->
-          <div class="quick-bar hidden" id="quick-bar" style="display:none;flex-direction:column;gap:10px;padding:14px;background:rgba(45,106,79,0.12);border-radius:12px;margin-bottom:10px">
-            <div id="quick-progress" style="color:#86efac;font-size:12px;min-height:18px"></div>
-            <button id="btn-quick-run" style="background:#2D6A4F;padding:14px 12px;font-size:14px;border-radius:10px;border:none;color:#fff;font-weight:600;cursor:pointer;line-height:1.3">🔍 Талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">беткейлерді өзі табады</span></button>
+          <!-- The per-surface tools, one click away -->
+          <div class="quick-bar hidden" id="quick-bar" style="display:none;flex-direction:column;padding:2px 0;margin-bottom:6px">
             <button id="btn-toggle-advanced" style="background:none;border:none;color:rgba(255,255,255,.45);font-size:11px;cursor:pointer;padding:2px;text-align:left">Қолмен реттеу ▾</button>
           </div>
 
@@ -357,8 +353,6 @@ const UploadTool = (() => {
       btnAutoSegment: modal.querySelector('#btn-auto-segment'),
       // One-tap mode
       quickBar: modal.querySelector('#quick-bar'),
-      btnQuickRun: modal.querySelector('#btn-quick-run'),
-      quickProgress: modal.querySelector('#quick-progress'),
       btnToggleAdvanced: modal.querySelector('#btn-toggle-advanced'),
       autoSegStatus: modal.querySelector('#auto-seg-status'),
       // Text-prompt segmentation
@@ -415,7 +409,6 @@ const UploadTool = (() => {
     els.samBtnRun.addEventListener('click', runSamSegmentation);
 
     // One-tap analysis
-    els.btnQuickRun.addEventListener('click', () => runQuickAnalysis());
     els.btnToggleAdvanced.addEventListener('click', toggleAdvanced);
 
     // Auto-segment
@@ -528,13 +521,8 @@ const UploadTool = (() => {
     // Show auto-segment bar (only online)
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
 
-    /* Most people want one button and a finished result. The per-surface
-       tools stay a click away for anyone who wants to correct something. */
     els.quickBar.classList.toggle('hidden', isLocal);
     els.quickBar.style.display = isLocal ? 'none' : 'flex';
-    els.quickProgress.textContent = '';
-    els.btnQuickRun.disabled = false;
-    els.btnQuickRun.innerHTML = '🔍 Талдау<br><span style="font-size:11px;font-weight:400;opacity:.8">беткейлерді өзі табады</span>';
     advancedOpen = false;
     applyAdvancedVisibility(isLocal);
 
@@ -1664,260 +1652,6 @@ const UploadTool = (() => {
         mData[p] = v; mData[p + 1] = v; mData[p + 2] = v;
         mData[p + 3] = inside ? 255 : 0;
       }
-    }
-  }
-
-  // ===== ONE-TAP ANALYSIS =====
-  /* Runs the whole pipeline behind a single button: segment the photo,
-     split each surface into its own layer, then stop. Everything here is
-     already available separately in the advanced panels — this just does
-     it in the right order so the person doesn't have to know that order. */
-
-  // ===== CLEAN WALL MASK =====
-  // Removes other detected surfaces/objects from the wall mask.
-  // This keeps windows, doors, ceiling and floor from being painted as wall.
-  async function cleanWallMaskFromOtherSurfaces() {
-    const wall = state.masks.find(m => (m.name || '').toLowerCase().includes('қабырға'));
-    if (!wall || !wall.canvas) return false;
-
-    const excludeNames = [
-      'төбе', 'ceiling',
-      'еден', 'floor',
-      'терезе', 'window',
-      'есік', 'door',
-      'жиһаз', 'furniture'
-    ];
-
-    const excludeMasks = state.masks.filter(m => {
-      if (!m || !m.canvas || m === wall) return false;
-      const name = (m.name || '').toLowerCase();
-      return excludeNames.some(k => name.includes(k));
-    });
-
-    if (!excludeMasks.length) return false;
-
-    const w = wall.canvas.width;
-    const h = wall.canvas.height;
-    const wallCtx = wall.canvas.getContext('2d');
-    const wallData = wallCtx.getImageData(0, 0, w, h);
-
-    const excludeData = excludeMasks.map(m =>
-      m.canvas.getContext('2d').getImageData(0, 0, w, h)
-    );
-
-    for (let p = 0; p < wallData.data.length; p += 4) {
-      let excluded = false;
-
-      for (const data of excludeData) {
-        // Any visible pixel in an exclusion mask removes that pixel
-        // from the wall mask.
-        if (data.data[p + 3] > 32 && data.data[p] > 32) {
-          excluded = true;
-          break;
-        }
-      }
-
-      if (excluded) {
-        wallData.data[p] = 0;
-        wallData.data[p + 1] = 0;
-        wallData.data[p + 2] = 0;
-        wallData.data[p + 3] = 0;
-      }
-    }
-
-    wallCtx.putImageData(wallData, 0, 0);
-    console.log('[WallClean] Removed exclusion surfaces from wall:',
-      excludeMasks.map(m => m.name));
-    return true;
-  }
-
-  // Also remove a mask by canvas overlap without requiring translated names.
-  // Used after auto-segmentation when labels are known.
-  async function subtractMasksFromWallByIndices(wallIndex, excludeIndices) {
-    const wall = state.masks[wallIndex];
-    if (!wall || !wall.canvas) return false;
-
-    const w = wall.canvas.width;
-    const h = wall.canvas.height;
-    const ctx = wall.canvas.getContext('2d');
-    const wallData = ctx.getImageData(0, 0, w, h);
-
-    const excludes = excludeIndices
-      .map(i => state.masks[i])
-      .filter(m => m && m.canvas)
-      .map(m => m.canvas.getContext('2d').getImageData(0, 0, w, h));
-
-    if (!excludes.length) return false;
-
-    for (let p = 0; p < wallData.data.length; p += 4) {
-      let remove = false;
-      for (const data of excludes) {
-        if (data.data[p + 3] > 32 && data.data[p] > 32) {
-          remove = true;
-          break;
-        }
-      }
-      if (remove) {
-        wallData.data[p] = 0;
-        wallData.data[p + 1] = 0;
-        wallData.data[p + 2] = 0;
-        wallData.data[p + 3] = 0;
-      }
-    }
-
-    ctx.putImageData(wallData, 0, 0);
-    return true;
-  }
-
-  let quickRunning = false;
-
-  /* Indoors the model sees a ceiling; outdoors it sees a building and no
-     ceiling at all. That is enough to tell the two apart, so there is
-     nothing to ask the person before starting. */
-  function detectMode() {
-    const outdoor = ['building', 'house', 'skyscraper', 'hovel'].some(k => autoSegMasks[k]);
-    // A building and no interior wall — nothing indoors about this photo
-    if (outdoor && !autoSegMasks.wall) return 'facade';
-    // A porch roof can read as a ceiling, so the wall has the final say
-    if (autoSegMasks.ceiling) return 'room';
-    return outdoor ? 'facade' : 'room';
-  }
-
-  async function runQuickAnalysis() {
-    if (quickRunning) return;
-    if (!state.uploadedImage) { alert('Алдымен фото жүктеңіз!'); return; }
-
-    const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-    if (isLocal) { alert('Талдау тек онлайн нұсқада жұмыс істейді (Vercel).'); return; }
-
-    quickRunning = true;
-    let mode = null;
-    els.btnQuickRun.disabled = true;
-    const t0 = Date.now();
-    if (window.track) track('analysis_start', {});
-    let roofFailed = false;
-    let roofMethod = null;   // 'text' | 'eaves' | null
-    const step = (t) => { els.quickProgress.textContent = t; };
-
-    try {
-      step('⏳ Суретті талдау...');
-      await runAutoSegment({ silent: true });
-
-      const found = Object.keys(autoSegMasks);
-      mode = detectMode();
-      console.log(`[Quick] ${mode} — labels: ${found.join(', ') || 'none'}`);
-      if (!found.length) {
-        step('⚠ Беткей табылмады. Қолмен реттеп көріңіз.');
-        advancedOpen = true; applyAdvancedVisibility(false);
-        return;
-      }
-
-      if (mode === 'room') {
-        for (const key of ['wall', 'ceiling', 'floor', 'windowpane', 'door']) {
-          if (!autoSegMasks[key]) continue;
-          step(`⏳ ${SEG_LABELS[key].label}...`);
-          await applyAutoSegMask(key);
-        }
-
-        // IMPORTANT:
-        // Wall must not include ceiling/floor/window/door.
-        // Run the subtraction only after all detected masks exist.
-        step('⏳ Қабырғаны тазалау...');
-        await cleanWallMaskFromOtherSurfaces();
-      } else {
-        const baseKey = ['building', 'house', 'skyscraper', 'wall', 'hovel']
-          .find(k => autoSegMasks[k]);
-        if (baseKey) {
-          step('⏳ Фасад...');
-          await applyAutoSegMask(baseKey);
-        }
-
-        /* Windows and doors go first: they carve the facade, and the eaves
-           search further down has to know where they are — a row of window
-           heads is a long straight edge too. */
-        for (const key of ['windowpane', 'door']) {
-          if (!autoSegMasks[key]) continue;
-          step(`⏳ ${SEG_LABELS[key].label}...`);
-          await applyAutoSegMask(key);
-        }
-
-        /* On a facade the model often misses the windows, and then they get
-           painted along with the wall. Ask for them by name, use the mask to
-           carve the facade, then drop the layer — nobody paints their glass,
-           and a layer slot is better spent on a surface that gets colour. */
-        if (!autoSegMasks.windowpane) {
-          step('⏳ Терезе...');
-          const win = TEXT_SEG_CHIPS.find(c => c.label === 'Терезе');
-          try {
-            const res = await runTextSegment(win.prompt, win.label, win.neg, win.max, { silent: true });
-            if (res) {
-              const ok = res.share <= win.max;
-              // The carve has to survive later re-cuts from the pristine copy
-              if (ok) bakeIntoPristine(res.idx);
-              const m = state.masks[res.idx];
-              if (m) {
-                m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
-                m.name = '';
-              }
-              console.log(`[Quick] windows ${ok ? 'carved out' : 'rejected'} — ${(res.share * 100).toFixed(0)}%`);
-            }
-          } catch (e) { console.warn('[Quick] windows skipped', e); }
-        }
-
-        // The model has no roof class, so ask for it by name
-        step('⏳ Шатыр...');
-        const roof = TEXT_SEG_CHIPS.find(c => c.label === 'Шатыр');
-        try {
-          const res = await runTextSegment(roof.prompt, roof.label, roof.neg, roof.max, { silent: true });
-          /* A roof that fills half the frame isn't a roof — the model found
-             the sky or the trees. Better to leave the layer empty than to
-             hand back a wrong one the person then has to undo. */
-          if (res && res.share > roof.max) {
-            const m = state.masks[res.idx];
-            if (m) {
-              m.canvas.getContext('2d').clearRect(0, 0, m.canvas.width, m.canvas.height);
-              m.name = '';
-            }
-            console.log(`[Quick] roof rejected — ${(res.share * 100).toFixed(0)}% of frame`);
-          } else if (res) {
-            roofMethod = 'text';
-          }
-        } catch (e) { console.warn('[Quick] roof skipped', e); }
-
-        /* When the text model misses, find the eaves line in the photo and
-           take everything of the building above it. No model call. */
-        if (!roofMethod && baseKey) {
-          step('⏳ Карниз сызығы...');
-          if (await buildRoofFromEaves(baseKey, { silent: true })) roofMethod = 'eaves';
-        }
-        roofFailed = !roofMethod;
-
-        if (baseKey) {
-          step('⏳ Цоколь...');
-          await buildSkirting(baseKey, baseKey !== 'wall');
-        }
-      }
-
-      const names = state.masks.filter(m => m.name).map(m => m.name);
-      if (window.track) track('analysis_done', {
-        mode, surfaces: names.join(','), seconds: Math.round((Date.now() - t0) / 1000),
-        roof_failed: roofFailed ? 1 : 0, roof_method: roofMethod || 'none'
-      });
-      if (roofFailed) {
-        step(`✅ ${names.join(' · ')} — шатырды «Қолмен реттеу» арқылы қосыңыз`);
-        advancedOpen = true; applyAdvancedVisibility(false);
-      } else {
-        step(`✅ Дайын: ${names.join(' · ')}`);
-      }
-
-    } catch (err) {
-      console.error('[Quick] Error:', err);
-      if (window.track) track('analysis_failed', { mode: mode || 'unknown', error: String(err.message).slice(0, 80) });
-      step('❌ Қате: ' + err.message + ' — қайта көріңіз');
-    } finally {
-      quickRunning = false;
-      els.btnQuickRun.disabled = false;
-      els.btnQuickRun.innerHTML = '🔄 Қайта талдау';
     }
   }
 
