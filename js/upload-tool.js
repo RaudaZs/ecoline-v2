@@ -506,6 +506,8 @@ const UploadTool = (() => {
     state.undoStack = [];
     // A new photo: nothing measured on the old one applies any more
     pristineByKey = {};
+    obstacleMasks = {};
+    obstacleCache = null;
     roofEdge = null;
     if (window.track) track('photo_uploaded', {});
     renderLayers();
@@ -1356,6 +1358,39 @@ const UploadTool = (() => {
      before any other layer was carved out of it. Geometric layers — roof,
      skirting — re-cut the broad layer from this copy on every slider move. */
   let pristineByKey = {};
+  /* Everything else the model labelled — plant, pot, chair, lamp, sofa…
+     Semantic segmentation gives each pixel exactly one label, so a pixel
+     the model called "plant" is not wall. These masks never become layers;
+     they only keep the broad surfaces from spilling onto the objects in
+     front of them. */
+  let obstacleMasks = {};
+  let obstacleCache = null;   // { w, h, data: Uint8Array } — union of all of them
+
+  async function getObstacleUnion(w, h) {
+    if (obstacleCache && obstacleCache.w === w && obstacleCache.h === h) return obstacleCache.data;
+    const keys = Object.keys(obstacleMasks);
+    const out = new Uint8Array(w * h);
+    if (keys.length) {
+      const c = document.createElement('canvas');
+      c.width = w; c.height = h;
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
+      ctx.globalCompositeOperation = 'lighten';
+      for (const k of keys) {
+        try {
+          const img = await loadMaskImage(obstacleMasks[k]);
+          ctx.drawImage(img, 0, 0, w, h);
+        } catch (e) {
+          console.warn('[AutoSeg] obstacle mask skipped:', k, e.message);
+        }
+      }
+      const d = ctx.getImageData(0, 0, w, h).data;
+      for (let i = 0; i < out.length; i++) if (d[i * 4] > 128) out[i] = 1;
+    }
+    obstacleCache = { w, h, data: out };
+    return out;
+  }
 
   async function runAutoSegment(opts) {
     const quiet = opts && opts.silent;
@@ -1426,6 +1461,8 @@ const UploadTool = (() => {
       // 4) Filter wall/ceiling/floor from output
       autoSegMasks = {};
       pristineByKey = {};
+      obstacleMasks = {};
+      obstacleCache = null;
       roofEdge = null;
       const oldRoofCtl = document.getElementById('roofCtl');
       if (oldRoofCtl) oldRoofCtl.remove();
@@ -1439,11 +1476,14 @@ const UploadTool = (() => {
               score: (typeof seg.score === 'number') ? (seg.score * 100).toFixed(0) : null
             };
             console.log(`[AutoSeg] Found: ${key} | mask type: ${typeof maskVal} | starts: ${String(maskVal).slice(0, 40)}`);
+          } else if (key && seg.mask) {
+            obstacleMasks[key] = seg.mask;
           }
         }
       }
 
-      console.log('[AutoSeg] Total segments:', segments?.length, '| Matched:', Object.keys(autoSegMasks));
+      console.log('[AutoSeg] Total segments:', segments?.length, '| Matched:', Object.keys(autoSegMasks),
+        '| Objects kept off the surfaces:', Object.keys(obstacleMasks));
 
       // 5) Show picker UI
       showAutoSegPicker();
@@ -1528,6 +1568,37 @@ const UploadTool = (() => {
      distance above and below the mask edge, find the strongest step, and
      move the edge there. Closer candidates are favoured so a distant, even
      stronger edge (a picture frame, say) doesn't drag the line away. */
+  /* Least-squares line through (x, v[x]) for x in [a, b), refitted
+     without the columns far off it — a pot or a chair in front of the wall
+     is a bump in the edge, not the edge. mad is over the kept columns. */
+  function robustLineFit(v, a, b) {
+    let keep = null, m = 0, c = 0, mad = 0, n = 0;
+    for (let pass = 0; pass < 3; pass++) {
+      let sx = 0, sy = 0, sxx = 0, sxy = 0;
+      n = 0;
+      for (let x = a; x < b; x++) {
+        if (v[x] < 0 || (keep && !keep[x - a])) continue;
+        n++; sx += x; sy += v[x]; sxx += x * x; sxy += x * v[x];
+      }
+      const den = n * sxx - sx * sx;
+      if (n < Math.max(5, (b - a) * 0.3) || Math.abs(den) < 1e-6) return null;
+      m = (n * sxy - sx * sy) / den;
+      c = (sy - m * sx) / n;
+      let dev = 0;
+      for (let x = a; x < b; x++) {
+        if (v[x] < 0 || (keep && !keep[x - a])) continue;
+        dev += Math.abs(v[x] - (m * x + c));
+      }
+      mad = dev / n;
+      const lim = Math.max(2, mad * 2.5);
+      keep = new Uint8Array(b - a);
+      for (let x = a; x < b; x++) {
+        if (v[x] >= 0 && Math.abs(v[x] - (m * x + c)) <= lim) keep[x - a] = 1;
+      }
+    }
+    return { m, c, mad, n };
+  }
+
   function snapMaskToPhotoEdges(mData, photo, w, h) {
     const R = Math.max(4, Math.round(h * 0.02));
 
@@ -1579,31 +1650,43 @@ const UploadTool = (() => {
       }
 
       /* Where a wall meets a ceiling or a floor the real boundary is a
-         straight line — perspective tilts it, but never bends it. Fit a
-         line and pull the edge onto it, harder the wavier it started. */
-      let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
-      for (let x = 0; x < w; x++) {
-        if (out[x] < 0) continue;
-        n++; sx += x; sy += out[x]; sxx += x * x; sxy += x * out[x];
-      }
+         straight line — perspective tilts it, but never bends it. Except in
+         a corner, where two walls meet and the line breaks once. So fit
+         either one line or two lines with a break, whichever is clearly
+         better, ignoring columns where something stands in front of the
+         edge (a pot, a chair, a door), then pull the edge onto it. */
+      let n = 0;
+      for (let x = 0; x < w; x++) if (out[x] >= 0) n++;
       if (n > w * 0.4) {
-        const den = n * sxx - sx * sx;
-        if (Math.abs(den) > 1e-6) {
-          const slope = (n * sxy - sx * sy) / den;
-          const icpt = (sy - slope * sx) / n;
-          let dev = 0, dn = 0;
+        let model = null;
+        const one = robustLineFit(out, 0, w);
+        if (one) model = { at: x => one.m * x + one.c, mad: one.mad, kind: 'line' };
+
+        let two = null;
+        const stepB = Math.max(4, Math.round(w / 40));
+        for (let bx = Math.round(w * 0.12); bx <= Math.round(w * 0.88); bx += stepB) {
+          const L = robustLineFit(out, 0, bx), Rt = robustLineFit(out, bx, w);
+          if (!L || !Rt) continue;
+          const mad = (L.mad * L.n + Rt.mad * Rt.n) / (L.n + Rt.n);
+          if (!two || mad < two.mad) two = { L, Rt, bx, mad };
+        }
+        if (two && (!model || two.mad < model.mad * 0.6) && Math.abs(two.L.m - two.Rt.m) > 0.03) {
+          const { L, Rt, bx } = two;
+          // Join the two lines where they actually cross, if that's near the break
+          let xi = (Rt.c - L.c) / (L.m - Rt.m);
+          if (!isFinite(xi) || Math.abs(xi - bx) > w * 0.08) xi = bx;
+          model = { at: x => x < xi ? L.m * x + L.c : Rt.m * x + Rt.c, mad: two.mad, kind: 'corner' };
+        }
+
+        if (model && model.mad < h * 0.06) {
+          const pull = Math.min(0.9, 0.5 + model.mad / (h * 0.01));
+          const lim = Math.max(3, model.mad * 2.5, h * 0.01);
           for (let x = 0; x < w; x++) {
             if (out[x] < 0) continue;
-            dev += Math.abs(out[x] - (slope * x + icpt)); dn++;
-          }
-          const mad = dev / Math.max(1, dn);
-          // A corner between two walls is genuinely bent — don't flatten it
-          if (mad < h * 0.06) {
-            const pull = Math.min(0.9, mad / (h * 0.015));
-            for (let x = 0; x < w; x++) {
-              if (out[x] < 0) continue;
-              out[x] = Math.round(out[x] * (1 - pull) + (slope * x + icpt) * pull);
-            }
+            const target = model.at(x);
+            // Far off the line = something in front of the edge — leave it
+            if (Math.abs(out[x] - target) > lim) continue;
+            out[x] = Math.round(out[x] * (1 - pull) + target * pull);
           }
         }
       }
@@ -2429,7 +2512,7 @@ const UploadTool = (() => {
         : key === 'ceiling' ? ['door', 'windowpane', 'floor']
         : key === 'floor' ? ['door', 'windowpane', 'rug']
         : [];
-
+      const nbData = [];
       for (const nk of neighbours) {
         if (!autoSegMasks[nk]) continue;
         try {
@@ -2438,25 +2521,37 @@ const UploadTool = (() => {
           nc.width = w; nc.height = h;
           const nCtx = nc.getContext('2d', { willReadFrequently: true });
           nCtx.drawImage(nImg, 0, 0, w, h);
-          const nData = nCtx.getImageData(0, 0, w, h).data;
-          for (let i = 0; i < mData.data.length; i += 4) {
-            if (mData.data[i + 3] > 0 && nData[i] > 128) {
-              mData.data[i] = 0; mData.data[i + 1] = 0;
-              mData.data[i + 2] = 0; mData.data[i + 3] = 0;
-            }
-          }
+          nbData.push(nCtx.getImageData(0, 0, w, h).data);
         } catch (e) {
           console.warn('[AutoSeg] neighbour mask skipped:', nk, e.message);
         }
       }
 
+      // Big surfaces also give way to every object standing in front of them
+      const SURFACES = ['wall', 'ceiling', 'floor', 'building', 'house', 'skyscraper', 'hovel'];
+      const obstacles = SURFACES.includes(key) ? await getObstacleUnion(w, h) : null;
+
+      const carve = () => {
+        const d = mData.data;
+        for (let i = 0, j = 0; i < d.length; i += 4, j++) {
+          if (d[i + 3] === 0) continue;
+          let off = obstacles && obstacles[j];
+          for (let n = 0; !off && n < nbData.length; n++) off = nbData[n][i] > 128;
+          if (off) { d[i] = 0; d[i + 1] = 0; d[i + 2] = 0; d[i + 3] = 0; }
+        }
+      };
+      carve();
+
       /* Snap the boundary to the real edge in the photo. Only for the big
          flat surfaces — a door or window has its own frame and the model
-         already tracks those tightly. */
+         already tracks those tightly. The snap fills columns out to the
+         straightened edge, which can reach over a pot or a door that stands
+         on that edge — so carve once more afterwards. */
       if (key === 'wall' || key === 'ceiling' || key === 'floor') {
         const photo = els.canvasBase.getContext('2d', { willReadFrequently: true })
           .getImageData(0, 0, w, h).data;
         snapMaskToPhotoEdges(mData.data, photo, w, h);
+        carve();
       }
 
       /* A facade mask covers the whole house — roof, windows and all. Any
