@@ -179,10 +179,6 @@ const UploadTool = (() => {
             <p class="sam-hint-text">🎯 Алдымен қабырғаға басыңыз (жасыл), содан кейін еден/төбеге (қызыл) — тек қабырға қалады</p>
           </div>
 
-          <!-- The per-surface tools, one click away -->
-          <div class="quick-bar hidden" id="quick-bar" style="display:none;flex-direction:column;padding:2px 0;margin-bottom:6px">
-            <button id="btn-toggle-advanced" style="background:none;border:none;color:rgba(255,255,255,.45);font-size:11px;cursor:pointer;padding:2px;text-align:left">Қолмен реттеу ▾</button>
-          </div>
 
           <!-- Auto-segment button -->
           <div class="auto-seg-bar hidden" id="auto-seg-bar" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:rgba(124,58,237,0.1);border-radius:10px;margin-bottom:8px;flex-wrap:wrap">
@@ -352,8 +348,6 @@ const UploadTool = (() => {
       autoSegBar: modal.querySelector('#auto-seg-bar'),
       btnAutoSegment: modal.querySelector('#btn-auto-segment'),
       // One-tap mode
-      quickBar: modal.querySelector('#quick-bar'),
-      btnToggleAdvanced: modal.querySelector('#btn-toggle-advanced'),
       autoSegStatus: modal.querySelector('#auto-seg-status'),
       // Text-prompt segmentation
       textSegBar: modal.querySelector('#text-seg-bar'),
@@ -409,7 +403,6 @@ const UploadTool = (() => {
     els.samBtnRun.addEventListener('click', runSamSegmentation);
 
     // One-tap analysis
-    els.btnToggleAdvanced.addEventListener('click', toggleAdvanced);
 
     // Auto-segment
     els.btnAutoSegment.addEventListener('click', runAutoSegment);
@@ -518,34 +511,21 @@ const UploadTool = (() => {
     renderLayers();
     updateApplyButton();
 
-    // Show auto-segment bar (only online)
+    // Auto-segment is always on screen (online only — it needs the API).
+    // The text-search bar stays hidden; flip SHOW_TEXT_SEG to bring it back.
     const isLocal = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-
-    els.quickBar.classList.toggle('hidden', isLocal);
-    els.quickBar.style.display = isLocal ? 'none' : 'flex';
-    advancedOpen = false;
-    applyAdvancedVisibility(isLocal);
+    els.autoSegBar.classList.toggle('hidden', isLocal);
+    els.autoSegBar.style.display = isLocal ? 'none' : 'flex';
+    const showText = SHOW_TEXT_SEG && !isLocal;
+    els.textSegBar.classList.toggle('hidden', !showText);
+    els.textSegBar.style.display = showText ? 'flex' : 'none';
 
     els.autoSegStatus.textContent = '';
     els.textSegStatus.textContent = '';
     renderTextSegChips();
   }
 
-  let advancedOpen = false;
-
-  function applyAdvancedVisibility(isLocal) {
-    const show = advancedOpen && !isLocal;
-    els.autoSegBar.classList.toggle('hidden', !show);
-    els.autoSegBar.style.display = show ? 'flex' : 'none';
-    els.textSegBar.classList.toggle('hidden', !show);
-    els.textSegBar.style.display = show ? 'flex' : 'none';
-    els.btnToggleAdvanced.textContent = show ? 'Қолмен реттеу ▴' : 'Қолмен реттеу ▾';
-  }
-
-  function toggleAdvanced() {
-    advancedOpen = !advancedOpen;
-    applyAdvancedVisibility(false);
-  }
+  const SHOW_TEXT_SEG = false;
 
   function createMaskCanvas(w, h) {
     const c = document.createElement('canvas');
